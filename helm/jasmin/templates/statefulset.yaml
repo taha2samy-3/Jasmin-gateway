@@ -1,0 +1,181 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "jasmin.fullname" . }}
+  labels:
+    {{- include "jasmin.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "jasmin.fullname" . }}
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "jasmin.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "jasmin.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: REDIS_CLIENT_HOST
+              value: {{ include "jasmin.redisHost" . | quote }}
+            - name: REDIS_CLIENT_PORT
+              value: {{ include "jasmin.redisPort" . | quote }}
+            - name: REDIS_CLIENT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.redis.existingSecret }}
+                  key: {{ default "redis-password" .Values.credentials.redis.existingSecretKey }}
+                  optional: true
+            - name: AMQP_BROKER_HOST
+              value: {{ include "jasmin.rabbitmqHost" . | quote }}
+            - name: AMQP_BROKER_PORT
+              value: {{ include "jasmin.rabbitmqPort" . | quote }}
+            - name: AMQP_BROKER_USER
+              value: {{ .Values.credentials.rabbitmq.username | quote }}
+            - name: AMQP_BROKER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.rabbitmq.existingSecret }}
+                  key: {{ default "rabbitmq-password" .Values.credentials.rabbitmq.existingSecretKey }}
+            - name: AMQP_BROKER_VHOST
+              value: {{ .Values.credentials.rabbitmq.vhost | quote }}
+            - name: JCLI_ADMIN_USERNAME
+              value: {{ .Values.credentials.jcli.username | quote }}
+            - name: JCLI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.jcli.existingSecret }}
+                  key: {{ default "jcli-password" .Values.credentials.jcli.existingSecretKey }}
+            - name: START_EMBEDDED_INTERCEPTOR
+              value: {{ ternary "true" "false" .Values.interceptor.embedded | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: smpp
+              containerPort: {{ .Values.service.ports.smpp.targetPort }}
+              protocol: TCP
+            - name: http-api
+              containerPort: {{ .Values.service.ports.httpApi.targetPort }}
+              protocol: TCP
+            - name: jcli
+              containerPort: {{ .Values.service.ports.jcli.targetPort }}
+              protocol: TCP
+            - name: interceptor
+              containerPort: {{ .Values.service.ports.interceptor.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: http-api
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: http-api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/jasmin/jasmin.cfg
+              subPath: jasmin.cfg
+            - name: config-volume
+              mountPath: /etc/jasmin/interceptor.cfg
+              subPath: interceptor.cfg
+            {{- if .Values.jasminRoutes.enabled }}
+            - name: config-volume
+              mountPath: /etc/jasmin/routes.json
+              subPath: routes.json
+            {{- end }}
+            - name: store
+              mountPath: /etc/jasmin/store
+            - name: logs
+              mountPath: /var/log/jasmin
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config-volume
+          configMap:
+            name: {{ include "jasmin.fullname" . }}-config
+        {{- if not .Values.persistence.enabled }}
+        - name: store
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: store
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          - {{ .Values.persistence.accessMode | quote }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size | quote }}
+    - metadata:
+        name: logs
+      spec:
+        accessModes:
+          - {{ .Values.persistence.accessMode | quote }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: 2Gi
+  {{- end }}

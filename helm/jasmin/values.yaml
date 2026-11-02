@@ -1,0 +1,349 @@
+# Default values for Jasmin SMS Gateway Helm Chart.
+
+replicaCount: 1
+
+image:
+  repository: jasmin
+  tag: "0.11.1"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "1401"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+
+# Set hostNetwork to true only if running on bare-metal without a LoadBalancer
+# or if you strictly need the pod to bind directly to the node's network interfaces.
+# In 99% of cases, hostNetwork is NOT needed; use service.type: LoadBalancer instead.
+hostNetwork: false
+
+# Networking & Kubernetes Services
+service:
+  type: ClusterIP
+  # When using type: LoadBalancer or NodePort, set externalTrafficPolicy to "Local"
+  # to preserve real client source IP addresses (essential for Jasmin IP filtering)
+  externalTrafficPolicy: "Local"
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  annotations: {}
+  ports:
+    smpp:
+      port: 2775
+      targetPort: 2775
+      protocol: TCP
+      name: smpp
+      # nodePort: 32775
+    httpApi:
+      port: 1401
+      targetPort: 1401
+      protocol: TCP
+      name: http-api
+      # nodePort: 31401
+    jcli:
+      port: 8990
+      targetPort: 8990
+      protocol: TCP
+      name: jcli
+      # nodePort: 30990
+    interceptor:
+      port: 8987
+      targetPort: 8987
+      protocol: TCP
+      name: interceptor
+      # nodePort: 30987
+
+# Kubernetes Standard Ingress
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: jasmin.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# =============================================================================
+# Kubernetes Gateway API HTTPRoute (gateway.networking.k8s.io/v1)
+# Exposes Jasmin HTTP API (Port 1401) to external traffic through Gateway API
+# =============================================================================
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs:
+    - name: "my-gateway"
+      namespace: "default"
+      sectionName: "http"
+  hostnames:
+    - "jasmin.example.com"
+
+  # Option 1: Modular Jasmin API Endpoint Presets (active when rules: [] is empty)
+  # Easily toggle or customize Jasmin HTTP endpoints (/send, /rate, /balance, /ping, /metrics)
+  endpoints:
+    send:
+      enabled: true
+      path: /send
+      pathType: PathPrefix
+      methods: [GET, POST]
+    rate:
+      enabled: true
+      path: /rate
+      pathType: PathPrefix
+      methods: [GET]
+    balance:
+      enabled: true
+      path: /balance
+      pathType: PathPrefix
+      methods: [GET]
+    ping:
+      enabled: true
+      path: /ping
+      pathType: PathPrefix
+      methods: [GET]
+    metrics:
+      enabled: false  # Expose only if external Prometheus scraping via Gateway API is desired
+      path: /metrics
+      pathType: PathPrefix
+      methods: [GET]
+
+  # Option 2: Full custom rules array (overrides endpoints if specified)
+  rules: []
+    # - matches:
+    #     - path:
+    #         type: PathPrefix
+    #         value: /send
+    #       method: POST
+    #   backendRefs:
+    #     - name: jasmin
+    #       port: 1401
+
+# Persistence for /etc/jasmin/store and /var/log/jasmin
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 5Gi
+  annotations: {}
+
+# Authentication Credentials
+credentials:
+  jcli:
+    username: "jcliadmin"
+    password: "secretpassword"
+    existingSecret: ""
+    existingSecretKey: "jcli-password"
+  rabbitmq:
+    username: "guest"
+    password: "guestpassword"
+    vhost: "/"
+    existingSecret: ""
+    existingSecretKey: "rabbitmq-password"
+  redis:
+    password: ""
+    existingSecret: ""
+    existingSecretKey: "redis-password"
+
+# Redis Integration
+redis:
+  enabled: false
+  port: 6379
+
+externalRedis:
+  host: "redis-service"
+  port: 6379
+
+# RabbitMQ Integration
+rabbitmq:
+  enabled: false
+  port: 5672
+
+externalRabbitMQ:
+  host: "rabbitmq-service"
+  port: 5672
+
+# =========================================================================
+# Structured Jasmin Gateway Configurations (directly customizable from values)
+# =========================================================================
+config:
+  logLevel: "INFO"
+  logPrivacy: false
+
+  # [smpp-server]
+  smppServer:
+    bind: "0.0.0.0"
+    port: 2775
+    billingFeature: false
+    dlrExpiry: 86400
+    sessionInitTimerSecs: 30
+    enquireLinkTimerSecs: 30
+    inactivityTimerSecs: 300
+    responseTimerSecs: 60
+    pduReadTimerSecs: 10
+
+  # [smpp-server-pb]
+  smppServerPb:
+    bind: "0.0.0.0"
+    port: 14000
+    authentication: false
+
+  # [client-management]
+  clientManagement:
+    bind: "0.0.0.0"
+    port: 8989
+    storePath: "/etc/jasmin/store"
+
+  # [router]
+  router:
+    bind: "0.0.0.0"
+    port: 8988
+    storePath: "/etc/jasmin/store"
+
+  # [http-api]
+  httpApi:
+    bind: "0.0.0.0"
+    port: 1401
+    showJasminVersion: true
+
+  # [jcli]
+  jcli:
+    bind: "0.0.0.0"
+    port: 8990
+    authentication: true
+    adminUsername: "jcliadmin"
+    # Plaintext or pre-hashed MD5 password (if plaintext, configure.py auto-hashes it on startup)
+    adminPassword: "secretpassword"
+
+  # [redis-client]
+  redisClient:
+    dbid: 0
+    poolsize: 30
+
+  # [amqp-broker]
+  amqpBroker:
+    vhost: "/"
+
+  # [interceptor-client]
+  interceptorClient:
+    host: "127.0.0.1"
+    port: 8987
+
+  # [dlr]
+  dlr:
+    dlrLookupRetryDelay: 180
+    dlrLookupMaxRetries: 1
+
+  # [deliversm-thrower]
+  deliversmThrower:
+    httpTimeout: 10
+    retryDelay: 90
+    maxRetries: 2
+
+  # [interceptor-pb]
+  interceptorPb:
+    bind: "0.0.0.0"
+    port: 8987
+    authentication: false
+
+  # Raw extra INI directives to append to jasmin.cfg
+  extraConfig: ""
+  # Full override of jasmin.cfg if needed
+  customJasminCfg: ""
+  # Full override of interceptor.cfg if needed
+  customInterceptorCfg: ""
+
+# =============================================================================
+# Jasmin SMS HTTP Connectors and Routing Profiles (Internal Jasmin Routing)
+# Automatically provisioned into Jasmin jCLI on startup via bootstrap-routes.py
+# =============================================================================
+jasminRoutes:
+  enabled: false
+  # HTTP Client Connectors (httpccm) for throwing incoming MO SMS to HTTP webhooks
+  httpConnectors:
+    # Example:
+    # - cid: "webhook_01"
+    #   url: "http://webhook-service.default.svc.cluster.local:8080/sms/incoming"
+    #   method: "POST"
+  # Inbound SMS MO Routes (morouter)
+  moRoutes:
+    # Example:
+    # - type: "DefaultRoute"
+    #   connector: "http(webhook_01)"
+    # - type: "StaticMORoute"
+    #   order: 10
+    #   connector: "http(webhook_01)"
+  # Outbound SMS MT Routes (mtrouter)
+  mtRoutes:
+    # Example:
+    # - type: "DefaultRoute"
+    #   rate: "0.0"
+    #   connector: "smppc(upstream_smpp_01)"
+
+# Interceptor Options
+interceptor:
+  enabled: true
+  embedded: true
+
+# Monitoring
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    path: /metrics
+    labels: {}
+
+# Resource limits & requests
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra environment variables to inject into the Jasmin container
+extraEnv: []
+  # - name: CUSTOM_VAR
+  #   value: "custom_value"
+
+# Extra envFrom sources (e.g. from existing ConfigMaps or Secrets)
+extraEnvFrom: []
+  # - configMapRef:
+  #     name: my-custom-config
+
+# Extra volumes to attach to the StatefulSet pod
+extraVolumes: []
+  # - name: custom-interceptors
+  #   configMap:
+  #     name: custom-interceptor-scripts
+
+# Extra volume mounts to mount inside the Jasmin container
+extraVolumeMounts: []
+  # - name: custom-interceptors
+  #   mountPath: /etc/jasmin/interceptors
+  #   readOnly: true

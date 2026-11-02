@@ -1,0 +1,36 @@
+========================================================================
+ Jasmin SMS Gateway has been installed successfully!
+========================================================================
+
+1. Accessing the jCLI (Management Console via Telnet):
+   Forward the jCLI port to your local machine:
+     export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "{{ include "jasmin.selectorLabels" . }}" -o jsonpath="{.items[0].metadata.name}")
+     kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8990:8990
+
+   Connect via Telnet:
+     telnet 127.0.0.1 8990
+     Username: {{ .Values.credentials.jcli.username }}
+     Password: (defined in Secret '{{ include "jasmin.fullname" . }}-secrets')
+
+2. Accessing the HTTP API & Prometheus Metrics:
+   Forward the HTTP API port:
+     kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 1401:1401
+
+   - Check Prometheus metrics:
+     curl http://127.0.0.1:1401/metrics
+
+   - Send an MT SMS via HTTP:
+     curl "http://127.0.0.1:1401/send?username=YOUR_USER&password=YOUR_PWD&to=DESTINATION&content=Hello+World"
+
+3. Connecting SMPP Clients:
+   SMPP Server listens on port {{ .Values.service.ports.smpp.port }}.
+   Forward the SMPP port:
+     kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 2775:2775
+
+   SMPP Endpoint: 127.0.0.1:2775
+
+4. Persistence Note:
+   Jasmin configurations (users, groups, filters, connectors, routes) created via jCLI
+   must be saved using the `persist` command in jCLI to write changes to /etc/jasmin/store.
+========================================================================
+

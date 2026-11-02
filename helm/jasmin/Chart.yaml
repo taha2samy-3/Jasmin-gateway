@@ -1,0 +1,19 @@
+apiVersion: v2
+name: jasmin
+description: A production-ready Helm chart for Jasmin SMS Gateway on Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.11.1"
+keywords:
+  - sms
+  - smpp
+  - gateway
+  - jasmin
+  - messaging
+  - telecommunications
+home: https://www.jasminsms.com
+sources:
+  - https://github.com/jookies/jasmin
+maintainers:
+  - name: DevOps Team
+

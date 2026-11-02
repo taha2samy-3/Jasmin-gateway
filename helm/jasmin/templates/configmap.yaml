@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jasmin.fullname" . }}-config
+  labels:
+    {{- include "jasmin.labels" . | nindent 4 }}
+data:
+  jasmin.cfg: |
+{{- if .Values.config.customJasminCfg }}
+{{ .Values.config.customJasminCfg | indent 4 }}
+{{- else }}
+    [smpp-server]
+    bind = {{ .Values.config.smppServer.bind | default "0.0.0.0" }}
+    port = {{ .Values.config.smppServer.port | default .Values.service.ports.smpp.targetPort }}
+    billing_feature = {{ ternary "True" "False" .Values.config.smppServer.billingFeature }}
+    dlr_expiry = {{ .Values.config.smppServer.dlrExpiry | default 86400 }}
+    sessionInitTimerSecs = {{ .Values.config.smppServer.sessionInitTimerSecs | default 30 }}
+    enquireLinkTimerSecs = {{ .Values.config.smppServer.enquireLinkTimerSecs | default 30 }}
+    inactivityTimerSecs = {{ .Values.config.smppServer.inactivityTimerSecs | default 300 }}
+    responseTimerSecs = {{ .Values.config.smppServer.responseTimerSecs | default 60 }}
+    pduReadTimerSecs = {{ .Values.config.smppServer.pduReadTimerSecs | default 10 }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+    log_privacy = {{ ternary "True" "False" .Values.config.logPrivacy }}
+
+    [smpp-server-pb]
+    bind = {{ .Values.config.smppServerPb.bind | default "0.0.0.0" }}
+    port = {{ .Values.config.smppServerPb.port | default 14000 }}
+    authentication = {{ ternary "True" "False" .Values.config.smppServerPb.authentication }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+
+    [client-management]
+    bind = {{ .Values.config.clientManagement.bind | default "0.0.0.0" }}
+    port = {{ .Values.config.clientManagement.port | default 8989 }}
+    store_path = {{ .Values.config.clientManagement.storePath | default "/etc/jasmin/store" }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+
+    [router]
+    bind = {{ .Values.config.router.bind | default "0.0.0.0" }}
+    port = {{ .Values.config.router.port | default 8988 }}
+    store_path = {{ .Values.config.router.storePath | default "/etc/jasmin/store" }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+
+    [http-api]
+    bind = {{ .Values.config.httpApi.bind | default "0.0.0.0" }}
+    port = {{ .Values.config.httpApi.port | default .Values.service.ports.httpApi.targetPort }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+
+    [jcli]
+    bind = {{ .Values.config.jcli.bind | default "0.0.0.0" }}
+    port = {{ .Values.config.jcli.port | default .Values.service.ports.jcli.targetPort }}
+    authentication = {{ ternary "True" "False" .Values.config.jcli.authentication }}
+    admin_username = {{ .Values.config.jcli.adminUsername | default .Values.credentials.jcli.username }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+
+    [redis-client]
+    host = {{ include "jasmin.redisHost" . }}
+    port = {{ include "jasmin.redisPort" . }}
+    dbid = {{ .Values.config.redisClient.dbid | default 0 }}
+    poolsize = {{ .Values.config.redisClient.poolsize | default 30 }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+
+    [amqp-broker]
+    host = {{ include "jasmin.rabbitmqHost" . }}
+    port = {{ include "jasmin.rabbitmqPort" . }}
+    username = {{ .Values.credentials.rabbitmq.username }}
+    vhost = {{ .Values.config.amqpBroker.vhost | default .Values.credentials.rabbitmq.vhost }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+
+    [interceptor-client]
+    host = {{ .Values.config.interceptorClient.host | default "127.0.0.1" }}
+    port = {{ .Values.config.interceptorClient.port | default .Values.service.ports.interceptor.targetPort }}
+
+    [dlr]
+    dlr_lookup_retry_delay = {{ .Values.config.dlr.dlrLookupRetryDelay | default 180 }}
+    dlr_lookup_max_retries = {{ .Values.config.dlr.dlrLookupMaxRetries | default 1 }}
+
+    [deliversm-thrower]
+    http_timeout = {{ .Values.config.deliversmThrower.httpTimeout | default 10 }}
+    retry_delay = {{ .Values.config.deliversmThrower.retryDelay | default 90 }}
+    max_retries = {{ .Values.config.deliversmThrower.maxRetries | default 2 }}
+
+{{- if .Values.config.extraConfig }}
+{{ .Values.config.extraConfig | indent 4 }}
+{{- end }}
+{{- end }}
+
+  interceptor.cfg: |
+{{- if .Values.config.customInterceptorCfg }}
+{{ .Values.config.customInterceptorCfg | indent 4 }}
+{{- else }}
+    [interceptor-pb]
+    bind = {{ .Values.config.interceptorPb.bind | default "0.0.0.0" }}
+    port = {{ .Values.config.interceptorPb.port | default .Values.service.ports.interceptor.targetPort }}
+    authentication = {{ ternary "True" "False" .Values.config.interceptorPb.authentication }}
+    log_level = {{ .Values.config.logLevel | default "INFO" }}
+{{- end }}
+{{- if .Values.jasminRoutes.enabled }}
+  routes.json: |
+    {{- dict "httpConnectors" (.Values.jasminRoutes.httpConnectors | default list) "moRoutes" (.Values.jasminRoutes.moRoutes | default list) "mtRoutes" (.Values.jasminRoutes.mtRoutes | default list) | toJson | nindent 4 }}
+{{- end }}
