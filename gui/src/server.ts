@@ -440,6 +440,27 @@ app.delete('/api/routes/mt/:order', async (req, res) => {
   }
 });
 
+// Update MT Route (for Node-RED style visual rewiring)
+app.put('/api/routes/mt/:order', async (req, res) => {
+  const currentOrder = parseInt(req.params.order, 10);
+  const { type, rate, connector, filters, newOrder } = req.body;
+
+  try {
+    // Jasmin replaces routes by removing and re-adding at the given priority order
+    await jcli.deleteMtRoute(currentOrder);
+    await jcli.createMtRoute(
+      type || 'StaticMTRoute',
+      rate !== undefined ? parseFloat(rate) : 0,
+      connector,
+      newOrder !== undefined ? parseInt(newOrder, 10) : currentOrder,
+      filters || []
+    );
+    res.json({ success: true, order: newOrder !== undefined ? newOrder : currentOrder });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Interactive Route Match Simulator
 app.post('/api/routes/simulate', async (req, res) => {
   const { uid, source_addr, destination_addr, text } = req.body;
@@ -713,6 +734,139 @@ app.post('/api/system/load', async (req, res) => {
   try {
     const result = await jcli.load();
     res.json({ success: true, log: result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12. Topology DAG Aggregator (Node-RED / Telecom Flow Engine)
+app.get('/api/topology', async (req, res) => {
+  try {
+    const [users, groups, filters, moRoutes, mtRoutes, smppConns, httpConns, mtInterceptors] = await Promise.all([
+      jcli.getUsers().catch(() => []),
+      jcli.getGroups().catch(() => []),
+      jcli.getFilters().catch(() => []),
+      jcli.getMoRoutes().catch(() => []),
+      jcli.getMtRoutes().catch(() => []),
+      jcli.getSmppConnectors().catch(() => []),
+      jcli.getHttpConnectors().catch(() => []),
+      jcli.getMtInterceptors().catch(() => [])
+    ]);
+
+    const nodes: any[] = [];
+    const edges: any[] = [];
+
+    // Stage 1: Ingress Nodes
+    nodes.push({
+      id: 'ingress_http',
+      type: 'ingress',
+      stage: 1,
+      label: 'HTTP REST API (:1401)',
+      data: { port: 1401, protocol: 'HTTP/REST' }
+    });
+    nodes.push({
+      id: 'ingress_smpp',
+      type: 'ingress',
+      stage: 1,
+      label: 'SMPP Server (:2775)',
+      data: { port: 2775, protocol: 'SMPP v3.4' }
+    });
+
+    // Stage 2: Users
+    for (const u of users) {
+      const uNodeId = `user_${u.uid}`;
+      nodes.push({
+        id: uNodeId,
+        type: 'user',
+        stage: 2,
+        label: `User: ${u.username}`,
+        data: u
+      });
+      edges.push({ id: `e_http_${u.uid}`, source: 'ingress_http', target: uNodeId });
+      edges.push({ id: `e_smpp_${u.uid}`, source: 'ingress_smpp', target: uNodeId });
+    }
+
+    // Stage 3: Interceptors
+    for (const ic of mtInterceptors) {
+      const icNodeId = `interceptor_${ic.order}`;
+      nodes.push({
+        id: icNodeId,
+        type: 'interceptor',
+        stage: 3,
+        label: `Interceptor #${ic.order}`,
+        data: ic
+      });
+      if (ic.order === 0) {
+        for (const u of users) {
+          edges.push({ id: `e_u_${u.uid}_ic_${ic.order}`, source: `user_${u.uid}`, target: icNodeId });
+        }
+      }
+    }
+
+    // Stage 4: Filters
+    for (const f of filters) {
+      const fNodeId = `filter_${f.fid}`;
+      nodes.push({
+        id: fNodeId,
+        type: 'filter',
+        stage: 4,
+        label: `Filter: ${f.fid}`,
+        data: f
+      });
+    }
+
+    // Stage 5: Routes
+    for (const r of mtRoutes) {
+      const rNodeId = `route_mt_${r.order}`;
+      nodes.push({
+        id: rNodeId,
+        type: 'route',
+        stage: 5,
+        label: `${r.type} #${r.order}`,
+        data: r
+      });
+
+      if (r.filters && r.filters.length > 0) {
+        for (const fid of r.filters) {
+          edges.push({ id: `e_f_${fid}_r_${r.order}`, source: `filter_${fid}`, target: rNodeId });
+        }
+      } else if (users.length > 0) {
+        edges.push({ id: `e_def_u_${r.order}`, source: `user_${users[0].uid}`, target: rNodeId });
+      }
+
+      if (r.connector) {
+        const cNodeId = `conn_smpp_${r.connector}`;
+        edges.push({ id: `e_r_${r.order}_c_${r.connector}`, source: rNodeId, target: cNodeId });
+      }
+    }
+
+    // Stage 6: Connectors
+    for (const c of smppConns) {
+      const cNodeId = `conn_smpp_${c.cid}`;
+      nodes.push({
+        id: cNodeId,
+        type: 'connector',
+        stage: 6,
+        label: `smppc(${c.cid})`,
+        data: c
+      });
+    }
+    for (const c of httpConns) {
+      const cNodeId = `conn_http_${c.cid}`;
+      nodes.push({
+        id: cNodeId,
+        type: 'connector',
+        stage: 6,
+        label: `httpc(${c.cid})`,
+        data: c
+      });
+    }
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      nodes,
+      edges
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
