@@ -80,3 +80,4 @@ jobs:
           done
 
           echo "[INFO] Lifecycle enforcement complete. Only $latest_tag is retained."
+

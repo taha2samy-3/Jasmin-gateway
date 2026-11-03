@@ -24,7 +24,7 @@ const httpSec = initialConfig.sections['http-api'] || {};
 const JCLI_HOST = process.env.JCLI_HOST || (jcliSec['bind'] && jcliSec['bind'] !== '0.0.0.0' ? jcliSec['bind'] : '127.0.0.1');
 const JCLI_PORT = parseInt(process.env.JCLI_PORT || jcliSec['port'] || '8990', 10);
 const JCLI_USERNAME = process.env.JCLI_ADMIN_USERNAME || jcliSec['admin_username'] || jcliSec['admin_user'] || 'jcliadmin';
-const JCLI_PASSWORD = process.env.JCLI_ADMIN_PASSWORD || 'mysecretpass';
+const JCLI_PASSWORD = process.env.JCLI_ADMIN_PASSWORD || 'jclipwd';
 const HTTP_API_URL = process.env.HTTP_API_URL || (httpSec['port'] ? `http://127.0.0.1:${httpSec['port']}` : 'http://127.0.0.1:1401');
 const PORT = parseInt(process.env.PORT || '3000', 10);
 

@@ -68,6 +68,10 @@ export class JCliClient {
           clearTimeout(initTimeout);
           this.buffer = '';
           resolve();
+        } else if (text.includes('Incorrect') || text.includes('Authentication failed')) {
+          clearTimeout(initTimeout);
+          socket.destroy();
+          reject(new Error('jCLI Authentication failed: Incorrect Username or Password'));
         }
       });
 

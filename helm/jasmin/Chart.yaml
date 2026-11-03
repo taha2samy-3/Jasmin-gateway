@@ -22,3 +22,8 @@ maintainers:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/category: integration-and-delivery
+  artifacthub.io/screenshots: |
+    - title: Jasmin Enterprise Management Dashboard
+      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/public/assets/dashboard-preview.png
+    - title: Official Jasmin SMS Gateway Architecture & Logo
+      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/public/assets/logo.png
