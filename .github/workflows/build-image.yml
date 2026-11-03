@@ -11,6 +11,9 @@ on:
         description: Release tag to build, e.g. v0.1.0
         required: true
         type: string
+    secrets:
+      GHCR_PAT:
+        required: false
     outputs:
       image:
         description: Image repository (Dashboard / GUI)
@@ -72,7 +75,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -152,7 +155,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Assemble multi-arch OCI 1.1 manifest list
         id: merge
@@ -248,7 +251,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -328,7 +331,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Assemble multi-arch OCI 1.1 manifest list
         id: merge

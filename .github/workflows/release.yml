@@ -33,6 +33,8 @@ jobs:
       attestations: write
     with:
       version: ${{ inputs.tag || github.ref_name }}
+    secrets:
+      GHCR_PAT: ${{ secrets.GHCR_PAT }}
 
   chart:
     name: Build & Attest Chart
@@ -48,6 +50,7 @@ jobs:
       jasmin-digest: ${{ needs.image.outputs.jasmin-digest }}
       image-digest: ${{ needs.image.outputs.gui-digest }}
     secrets:
+      GHCR_PAT: ${{ secrets.GHCR_PAT }}
       ARTIFACTHUB_API_KEY_ID: ${{ secrets.ARTIFACTHUB_API_KEY_ID }}
       ARTIFACTHUB_API_KEY_SECRET: ${{ secrets.ARTIFACTHUB_API_KEY_SECRET }}
 
@@ -146,7 +149,7 @@ jobs:
           echo "[INFO] Current latest release tag: $CURRENT_TAG (version: $current_version)"
 
           # Authenticate ORAS with GitHub Container Registry
-          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
 
           # Find all existing git tags starting with v* except the current one
           older_tags=$(git tag -l "v*" --sort=-v:refname | grep -v "^${CURRENT_TAG}$" || true)
