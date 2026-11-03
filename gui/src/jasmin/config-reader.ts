@@ -20,8 +20,11 @@ export class ConfigReader {
   }
 
   private resolvePath(customPath?: string): string {
+    if (customPath) {
+      return customPath;
+    }
+
     const candidates = [
-      customPath,
       process.env.JASMIN_CONFIG_PATH,
       '/etc/jasmin/jasmin.cfg',
       path.resolve(process.cwd(), '../docker/config/jasmin.cfg'),
