@@ -1,8 +1,8 @@
 # Multi-stage Dockerfile for Jasmin Enterprise Web Dashboard
 # Hardened Wolfi container runtime without Alpine
 
-# Stage 1: Build TypeScript and production dependencies
-FROM ghcr.io/taha2samy-3/node:22-dev AS builder
+# Stage 1: Build TypeScript and production dependencies natively on build host
+FROM --platform=$BUILDPLATFORM ghcr.io/taha2samy-3/node:22-dev AS builder
 
 WORKDIR /app
 

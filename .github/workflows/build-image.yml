@@ -1,6 +1,7 @@
-# Trusted builder for container images (SLSA Build Level 3)
-# Builds multi-arch linux/amd64 and linux/arm64 for Jasmin Gateway and Jasmin GUI,
-# signs with Cosign, generates and attests SBOM & SLSA provenance.
+# Trusted builder for container images (SLSA Build Level 3 & OCI 1.1)
+# Uses high-speed parallel matrix builds per architecture (AMD64 & ARM64),
+# merges manifests via docker buildx imagetools into OCI Image Index 1.1,
+# generates CycloneDX SBOMs, attests SLSA provenance and signs with Cosign keyless.
 name: Build image (reusable)
 
 on:
@@ -13,37 +14,43 @@ on:
     outputs:
       image:
         description: Image repository (Dashboard / GUI)
-        value: ${{ jobs.build-gui.outputs.image }}
+        value: ${{ jobs.merge-gui.outputs.image }}
       digest:
         description: Image index digest (Dashboard / GUI)
-        value: ${{ jobs.build-gui.outputs.digest }}
+        value: ${{ jobs.merge-gui.outputs.digest }}
       gui-image:
         description: Image repository (Dashboard / GUI)
-        value: ${{ jobs.build-gui.outputs.image }}
+        value: ${{ jobs.merge-gui.outputs.image }}
       gui-digest:
         description: Image index digest (Dashboard / GUI)
-        value: ${{ jobs.build-gui.outputs.digest }}
+        value: ${{ jobs.merge-gui.outputs.digest }}
       jasmin-image:
         description: Image repository (Jasmin Gateway)
-        value: ${{ jobs.build-jasmin.outputs.image }}
+        value: ${{ jobs.merge-jasmin.outputs.image }}
       jasmin-digest:
         description: Image index digest (Jasmin Gateway)
-        value: ${{ jobs.build-jasmin.outputs.digest }}
+        value: ${{ jobs.merge-jasmin.outputs.digest }}
 
 permissions: {}
 
 jobs:
+  # ============================================================================
+  # 1. PARALLEL MATRIX BUILDS: JASMIN GATEWAY
+  # ============================================================================
   build-jasmin:
-    name: Build Jasmin Gateway (Multi-Arch)
+    name: Build Jasmin (${{ matrix.platform.name }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
-    outputs:
-      image: ${{ steps.vars.outputs.image }}
-      digest: ${{ steps.push.outputs.digest }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arch: linux/amd64
+            name: amd64
+          - arch: linux/arm64
+            name: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,61 +78,44 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.vars.outputs.image }}
-          tags: |
-            type=semver,pattern={{version}},value=${{ inputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
-            type=raw,value=latest,enable=${{ !contains(inputs.version, '-') }}
           labels: |
             org.opencontainers.image.title=jasmin
             org.opencontainers.image.description=Production Jasmin SMS Gateway on Wolfi Linux
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
-      - name: Build and push multi-arch image (AMD64 & ARM64)
+      - name: Build and push by digest (${{ matrix.platform.name }})
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform.arch }}
+          outputs: type=image,name=${{ steps.vars.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           provenance: false
           sbom: false
 
-      - name: Attest build provenance (SLSA Build Level 3)
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      - name: Export digest artifact
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          subject-name: ${{ steps.vars.outputs.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
+          name: digests-jasmin-${{ matrix.platform.name }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Generate SBOM (CycloneDX)
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
-        with:
-          image: ${{ steps.vars.outputs.image }}@${{ steps.push.outputs.digest }}
-          format: cyclonedx-json
-          output-file: sbom-jasmin.cdx.json
-          upload-artifact: false
-
-      - name: Attest SBOM
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
-        with:
-          subject-name: ${{ steps.vars.outputs.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          sbom-path: sbom-jasmin.cdx.json
-          push-to-registry: true
-
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-
-      - name: Sign image (Cosign keyless)
-        env:
-          REF: ${{ steps.vars.outputs.image }}@${{ steps.push.outputs.digest }}
-        run: cosign sign --yes --recursive "$REF"
-
-  build-gui:
-    name: Build Jasmin GUI (Multi-Arch)
+  # ============================================================================
+  # 2. MERGE & ATTEST: JASMIN GATEWAY (OCI 1.1 INDEX + SLSA 3 + COSIGN)
+  # ============================================================================
+  merge-jasmin:
+    name: Merge & Attest Jasmin (OCI 1.1)
+    needs: [build-jasmin]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -134,7 +124,109 @@ jobs:
       attestations: write
     outputs:
       image: ${{ steps.vars.outputs.image }}
-      digest: ${{ steps.push.outputs.digest }}
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.version }}
+          persist-credentials: false
+
+      - name: Download all Jasmin digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digests-jasmin-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Configure image metadata
+        id: vars
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble multi-arch OCI 1.1 manifest list
+        id: merge
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}
+          TAG: ${{ inputs.version }}
+        run: |
+          version="${TAG#v}"
+          tag_args="-t ${IMAGE}:${version}"
+          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            tag_args="$tag_args -t ${IMAGE}:${major}.${minor} -t ${IMAGE}:latest"
+          fi
+
+          digest_args=$(printf "${IMAGE}@sha256:%s " $(ls /tmp/digests))
+          echo "Creating OCI index with tags: $tag_args"
+          echo "Sources: $digest_args"
+
+          docker buildx imagetools create $tag_args $digest_args
+
+          manifest_digest=$(docker buildx imagetools inspect "${IMAGE}:${version}" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ "$manifest_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::failed to parse manifest digest"; exit 1; }
+          echo "Merged manifest digest: $manifest_digest"
+          echo "digest=$manifest_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance (SLSA Build Level 3)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.vars.outputs.image }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ steps.vars.outputs.image }}@${{ steps.merge.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-jasmin.cdx.json
+          upload-artifact: false
+
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.vars.outputs.image }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          predicate-type: 'https://cyclonedx.org/bom'
+          predicate-path: sbom-jasmin.cdx.json
+          push-to-registry: true
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign image (Cosign keyless recursive)
+        env:
+          REF: ${{ steps.vars.outputs.image }}@${{ steps.merge.outputs.digest }}
+        run: cosign sign --yes --recursive "$REF"
+
+  # ============================================================================
+  # 3. PARALLEL MATRIX BUILDS: JASMIN GUI
+  # ============================================================================
+  build-gui:
+    name: Build GUI (${{ matrix.platform.name }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arch: linux/amd64
+            name: amd64
+          - arch: linux/arm64
+            name: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -162,55 +254,134 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.vars.outputs.image }}
-          tags: |
-            type=semver,pattern={{version}},value=${{ inputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
-            type=raw,value=latest,enable=${{ !contains(inputs.version, '-') }}
           labels: |
             org.opencontainers.image.title=jasmin-gui
             org.opencontainers.image.description=Enterprise Web Dashboard for Jasmin SMS Gateway on Wolfi Linux
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
-      - name: Build and push multi-arch image (AMD64 & ARM64)
+      - name: Build and push by digest (${{ matrix.platform.name }})
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: gui
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform.arch }}
+          outputs: type=image,name=${{ steps.vars.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           provenance: false
           sbom: false
 
+      - name: Export digest artifact
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-gui-${{ matrix.platform.name }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ============================================================================
+  # 4. MERGE & ATTEST: JASMIN GUI (OCI 1.1 INDEX + SLSA 3 + COSIGN)
+  # ============================================================================
+  merge-gui:
+    name: Merge & Attest GUI (OCI 1.1)
+    needs: [build-gui]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.version }}
+          persist-credentials: false
+
+      - name: Download all GUI digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digests-gui-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Configure image metadata
+        id: vars
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-gui" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble multi-arch OCI 1.1 manifest list
+        id: merge
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}
+          TAG: ${{ inputs.version }}
+        run: |
+          version="${TAG#v}"
+          tag_args="-t ${IMAGE}:${version}"
+          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            tag_args="$tag_args -t ${IMAGE}:${major}.${minor} -t ${IMAGE}:latest"
+          fi
+
+          digest_args=$(printf "${IMAGE}@sha256:%s " $(ls /tmp/digests))
+          echo "Creating OCI index with tags: $tag_args"
+          echo "Sources: $digest_args"
+
+          docker buildx imagetools create $tag_args $digest_args
+
+          manifest_digest=$(docker buildx imagetools inspect "${IMAGE}:${version}" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ "$manifest_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::failed to parse manifest digest"; exit 1; }
+          echo "Merged manifest digest: $manifest_digest"
+          echo "digest=$manifest_digest" >> "$GITHUB_OUTPUT"
+
       - name: Attest build provenance (SLSA Build Level 3)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.vars.outputs.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
           push-to-registry: true
 
       - name: Generate SBOM (CycloneDX)
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: ${{ steps.vars.outputs.image }}@${{ steps.push.outputs.digest }}
+          image: ${{ steps.vars.outputs.image }}@${{ steps.merge.outputs.digest }}
           format: cyclonedx-json
           output-file: sbom-gui.cdx.json
           upload-artifact: false
 
       - name: Attest SBOM
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.vars.outputs.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          sbom-path: sbom-gui.cdx.json
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          predicate-type: 'https://cyclonedx.org/bom'
+          predicate-path: sbom-gui.cdx.json
           push-to-registry: true
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Sign image (Cosign keyless)
+      - name: Sign image (Cosign keyless recursive)
         env:
-          REF: ${{ steps.vars.outputs.image }}@${{ steps.push.outputs.digest }}
+          REF: ${{ steps.vars.outputs.image }}@${{ steps.merge.outputs.digest }}
         run: cosign sign --yes --recursive "$REF"
