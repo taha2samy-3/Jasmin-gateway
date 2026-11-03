@@ -116,7 +116,11 @@ jobs:
         run: |
           repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
           echo "$REGISTRY_PASSWORD" | helm registry login ghcr.io -u "$REGISTRY_USER" --password-stdin
-          out="$(helm push "dist/${CHART_NAME}-${TAG#v}.tgz" "oci://$repo" 2>&1)"
+          out=""
+          out="$(helm push "dist/${CHART_NAME}-${TAG#v}.tgz" "oci://$repo" 2>&1)" || {
+            echo "::error::Helm push failed: $out"
+            exit 1
+          }
           echo "$out"
           digest="$(sed -nE 's/^Digest: (sha256:[a-f0-9]{64})$/\1/p' <<<"$out")"
           [[ -n "$digest" ]] || { echo "::error::could not read chart digest"; exit 1; }
