@@ -165,14 +165,21 @@ jobs:
           echo "Artifact Hub authenticated as alias: $alias"
 
           find_id() {
-            curl -fsS "${hdr[@]}" "$api/repositories/search?user=$alias&name=jasmin&limit=60" |
-              jq -r --arg url "$url" '[.[] | select(.url == $url) | .repository_id][0] // empty'
+            local res
+            res="$(curl -fsS "${hdr[@]}" "$api/repositories/search?user=$alias&name=jasmin" 2>/dev/null || true)"
+            if [[ -z "$res" || "$res" == "[]" ]]; then
+              res="$(curl -fsS "$api/repositories/search?name=jasmin" 2>/dev/null || true)"
+            fi
+            jq -r --arg url "$url" '[.[] | select(.url == $url) | .repository_id][0] // empty' <<<"$res"
           }
           id="$(find_id)"
+          if [[ -z "$id" && -f artifacthub-repo.yml ]]; then
+            id="$(yq 'select(.repositoryID != null) | .repositoryID' artifacthub-repo.yml 2>/dev/null || true)"
+          fi
           if [[ -z "$id" ]]; then
             echo "Registering $url on Artifact Hub..."
             jq -n --arg url "$url" '{kind: 0, name: "jasmin", display_name: "Jasmin SMS Gateway", url: $url}' |
-              curl -fsS "${hdr[@]}" -H 'Content-Type: application/json' -X POST "$api/repositories/user" --data-binary @-
+              curl -fsS "${hdr[@]}" -H 'Content-Type: application/json' -X POST "$api/repositories/user" --data-binary @- || true
             id="$(find_id)"
           fi
 
