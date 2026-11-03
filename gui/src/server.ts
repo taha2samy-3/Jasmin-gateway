@@ -872,6 +872,101 @@ app.get('/api/topology', async (req, res) => {
   }
 });
 
+// 13. Deploy Full Topology DAG to Jasmin & Persist (Atomic Transaction)
+app.post('/api/topology/deploy', async (req, res) => {
+  const { nodes, edges } = req.body;
+  if (!Array.isArray(nodes) || !Array.isArray(edges)) {
+    return res.status(400).json({ error: 'nodes and edges arrays are required' });
+  }
+
+  const logs: string[] = [];
+  try {
+    // 1. Process Filters
+    const filterNodes = nodes.filter((n: any) => n.type === 'filter');
+    for (const f of filterNodes) {
+      if (f.data && f.data.fid && f.data.type) {
+        let paramKey = 'destination_addr';
+        let paramValue = f.data.pattern || '^.*';
+
+        if (f.data.type === 'SourceAddrFilter') {
+          paramKey = 'source_addr';
+        } else if (f.data.type === 'ShortMessageFilter') {
+          paramKey = 'short_message';
+        } else if (f.data.type === 'UserFilter') {
+          paramKey = 'uid';
+          paramValue = f.data.uid || f.data.pattern;
+        } else if (f.data.type === 'GroupFilter') {
+          paramKey = 'gid';
+          paramValue = f.data.gid || f.data.pattern;
+        } else if (f.data.type === 'TagFilter') {
+          paramKey = 'tag';
+          paramValue = f.data.tag || f.data.pattern;
+        }
+
+        try {
+          await jcli.deleteFilter(f.data.fid);
+        } catch (_) {}
+        await jcli.createFilter(f.data.fid, f.data.type, paramKey, paramValue);
+        logs.push(`Filter ${f.data.fid} updated`);
+      }
+    }
+
+    // 2. Process Routes
+    const routeNodes = nodes.filter((n: any) => n.type === 'route');
+    for (const r of routeNodes) {
+      const order = r.data && r.data.order !== undefined ? parseInt(r.data.order, 10) : 0;
+      const type = r.data && r.data.type ? r.data.type : 'StaticMTRoute';
+      const rate = r.data && r.data.rate ? parseFloat(String(r.data.rate).replace(/[^0-9.]/g, '')) : 0;
+
+      // Extract incoming filters from edges
+      const incomingFilterIds = edges
+        .filter((e: any) => e.to === r.id || e.target === r.id)
+        .map((e: any) => {
+          const srcId = e.from || e.source;
+          const srcNode = nodes.find((n: any) => n.id === srcId);
+          return srcNode && srcNode.data ? srcNode.data.fid : null;
+        })
+        .filter(Boolean);
+
+      // Extract outgoing connectors from edges
+      const outgoingConnectors = edges
+        .filter((e: any) => e.from === r.id || e.source === r.id)
+        .map((e: any) => {
+          const tgtId = e.to || e.target;
+          const tgtNode = nodes.find((n: any) => n.id === tgtId);
+          return tgtNode && tgtNode.data ? tgtNode.data.cid : null;
+        })
+        .filter(Boolean);
+
+      if (outgoingConnectors.length > 0) {
+        try {
+          await jcli.deleteMtRoute(order);
+        } catch (_) {}
+        await jcli.createMtRoute(
+          type,
+          rate,
+          type === 'FailoverMTRoute' || type === 'RandomRoundrobinMTRoute' ? outgoingConnectors : outgoingConnectors[0],
+          order,
+          incomingFilterIds
+        );
+        logs.push(`Route #${order} (${type}) bound to ${outgoingConnectors.join(';')} with filters [${incomingFilterIds.join(',')}]`);
+      }
+    }
+
+    // 3. Persist to Disk
+    const persistLog = await jcli.persist();
+    logs.push(`Persist complete: ${persistLog}`);
+
+    res.json({
+      success: true,
+      persisted: true,
+      logs
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message, logs });
+  }
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[Jasmin Enterprise GUI] Web Server running at http://localhost:${PORT}`);
 });

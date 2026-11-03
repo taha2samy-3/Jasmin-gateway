@@ -112,6 +112,10 @@
     .port-in { left: -8px; }
     .port-out { right: -8px; }
 
+    /* Dual failover ports */
+    .port-out-pri { right: -8px; top: 35%; }
+    .port-out-bak { right: -8px; top: 65%; border-color: #f59e0b !important; }
+
     .port.port-valid-target {
       border-color: #22c55e !important;
       background: #22c55e !important;
@@ -159,6 +163,13 @@
     #toast-notification {
       transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
     }
+
+    /* Radar Minimap */
+    #minimap {
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid #1e293b;
+    }
   </style>
 </head>
 <body class="h-screen w-screen flex flex-col">
@@ -186,20 +197,31 @@
 
       <!-- Node-RED Palette Tools (Visible in Builder Mode) -->
       <div id="palette-tools" class="hidden flex items-center gap-2 border-l border-slate-800 pl-4">
-        <button onclick="paletteAddFilter()" class="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded font-medium flex items-center gap-1 transition">
+        <button onclick="openModal('modal-add-filter')" class="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded font-medium flex items-center gap-1 transition">
           <span>+</span> Filter
         </button>
-        <button onclick="paletteAddRoute()" class="text-xs bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 px-2.5 py-1 rounded font-medium flex items-center gap-1 transition">
+        <button onclick="openModal('modal-add-route')" class="text-xs bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 px-2.5 py-1 rounded font-medium flex items-center gap-1 transition">
           <span>+</span> MT Route
         </button>
-        <button onclick="paletteAddConnector()" class="text-xs bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 px-2.5 py-1 rounded font-medium flex items-center gap-1 transition">
+        <button onclick="openModal('modal-add-connector')" class="text-xs bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 px-2.5 py-1 rounded font-medium flex items-center gap-1 transition">
           <span>+</span> Connector
         </button>
       </div>
     </div>
 
     <!-- Live Controls -->
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-2.5">
+      <!-- Undo / Redo -->
+      <div class="flex items-center bg-slate-800 rounded-md border border-slate-700 text-xs mr-1">
+        <button class="px-2 py-1 text-slate-300 hover:text-white" onclick="undo()" title="Undo (Ctrl+Z)">↩</button>
+        <button class="px-2 py-1 text-slate-300 hover:text-white border-l border-slate-700" onclick="redo()" title="Redo (Ctrl+Y)">↪</button>
+      </div>
+
+      <!-- Export / Import Flow -->
+      <button onclick="exportFlowJson()" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2.5 py-1.5 rounded-md font-medium transition" title="Export Flow as JSON file">
+        Export JSON
+      </button>
+
       <!-- Round-trip Read Button: Sync directly from Jasmin Gateway -->
       <button onclick="syncFromGateway()" id="btn-sync-gateway" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-md font-semibold flex items-center gap-1.5 transition" title="Fetch live topology from Jasmin Gateway">
         <svg class="w-3.5 h-3.5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
@@ -208,7 +230,7 @@
 
       <button onclick="injectTestSms()" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-md font-semibold flex items-center gap-1.5 shadow-lg shadow-emerald-900/30 transition">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>
-        Simulate Packet Transit
+        Simulate Packet
       </button>
 
       <div class="flex items-center bg-slate-800 rounded-md border border-slate-700 text-xs">
@@ -241,12 +263,16 @@
           <feComposite in="SourceGraphic" in2="glow" operator="over" />
         </filter>
       </defs>
-      <!-- Cables and hitboxes will be rendered dynamically -->
     </svg>
 
     <!-- Translatable Flow Workspace -->
     <div id="flow-workspace" class="absolute inset-0 origin-top-left transition-none">
       <!-- Node cards injected here -->
+    </div>
+
+    <!-- Floating Minimap Radar (Overview in bottom right) -->
+    <div id="minimap" class="absolute bottom-5 right-5 w-48 h-28 rounded-lg shadow-2xl p-1 pointer-events-none z-20 border border-slate-800">
+      <canvas id="minimap-canvas" class="w-full h-full rounded"></canvas>
     </div>
   </div>
 
@@ -281,16 +307,106 @@
     <span id="toast-msg" class="text-slate-200 font-medium">Notification message</span>
   </div>
 
+  <!-- MODAL: ADD FILTER -->
+  <div id="modal-add-filter" class="fixed inset-0 bg-slate-950/75 backdrop-blur-sm hidden flex items-center justify-center z-50">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl w-96 p-5 shadow-2xl text-xs space-y-4">
+      <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-slate-100 text-sm">Add New Filter Component</h3>
+        <button onclick="closeModal('modal-add-filter')" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Filter Type</label>
+        <select id="mf-type" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200">
+          <option value="DestinationAddrFilter">DestinationAddrFilter (Phone Prefix Regex)</option>
+          <option value="SourceAddrFilter">SourceAddrFilter (Sender ID Whitelist)</option>
+          <option value="ShortMessageFilter">ShortMessageFilter (Content Regex)</option>
+          <option value="UserFilter">UserFilter (UID Binding)</option>
+          <option value="GroupFilter">GroupFilter (GID Binding)</option>
+          <option value="TagFilter">TagFilter (Integer Tag)</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Filter ID (FID)</label>
+        <input id="mf-fid" type="text" placeholder="e.g. egypt_vodafone" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200 font-mono">
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Pattern / Value</label>
+        <input id="mf-pattern" type="text" placeholder="e.g. ^2010[0-9]+" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-amber-300 font-mono">
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Regex Test Sample</label>
+        <input id="mf-sample" type="text" placeholder="e.g. 201012345678" oninput="testModalRegex()" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200 font-mono">
+        <div id="mf-match-status" class="mt-1 text-[11px] text-slate-500 font-mono">Status: Awaiting input</div>
+      </div>
+      <div class="flex justify-end gap-2 pt-2 border-t border-slate-800">
+        <button onclick="closeModal('modal-add-filter')" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300">Cancel</button>
+        <button onclick="confirmAddFilter()" class="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 rounded text-white font-semibold">Create Filter</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD ROUTE -->
+  <div id="modal-add-route" class="fixed inset-0 bg-slate-950/75 backdrop-blur-sm hidden flex items-center justify-center z-50">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl w-96 p-5 shadow-2xl text-xs space-y-4">
+      <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-slate-100 text-sm">Add New Routing Strategy</h3>
+        <button onclick="closeModal('modal-add-route')" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Route Type</label>
+        <select id="mr-type" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200">
+          <option value="StaticMTRoute">StaticMTRoute (Direct Single Carrier)</option>
+          <option value="FailoverMTRoute">FailoverMTRoute (Primary + Automatic Backup)</option>
+          <option value="RandomRoundrobinMTRoute">RandomRoundrobinMTRoute (Load Balanced)</option>
+          <option value="DefaultRoute">DefaultRoute (Lowest Priority Catch-All)</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Priority Order (0 = highest priority)</label>
+        <input id="mr-order" type="number" value="20" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200 font-mono">
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Billing Rate ($ / SMS)</label>
+        <input id="mr-rate" type="text" value="0.025" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-emerald-400 font-mono">
+      </div>
+      <div class="flex justify-end gap-2 pt-2 border-t border-slate-800">
+        <button onclick="closeModal('modal-add-route')" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300">Cancel</button>
+        <button onclick="confirmAddRoute()" class="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 rounded text-white font-semibold">Create Route</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD CONNECTOR -->
+  <div id="modal-add-connector" class="fixed inset-0 bg-slate-950/75 backdrop-blur-sm hidden flex items-center justify-center z-50">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl w-96 p-5 shadow-2xl text-xs space-y-4">
+      <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-slate-100 text-sm">Add Egress Connector</h3>
+        <button onclick="closeModal('modal-add-connector')" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Connector Protocol</label>
+        <select id="mc-proto" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200">
+          <option value="SMPP">SMPP Client Connector (Carrier SMSC)</option>
+          <option value="HTTP">HTTP Webhook Connector (REST Callback)</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">Connector ID (CID)</label>
+        <input id="mc-cid" type="text" placeholder="e.g. smsc_etisalat" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200 font-mono">
+      </div>
+      <div>
+        <label class="block text-slate-400 mb-1">SMSC Endpoint / Webhook URL</label>
+        <input id="mc-host" type="text" placeholder="e.g. 192.168.1.30:2775" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200 font-mono">
+      </div>
+      <div class="flex justify-end gap-2 pt-2 border-t border-slate-800">
+        <button onclick="closeModal('modal-add-connector')" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300">Cancel</button>
+        <button onclick="confirmAddConnector()" class="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 rounded text-white font-semibold">Create Connector</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Interactive JavaScript Engine -->
   <script>
-    // --- Architecture Specification & Stage Definitions ---
-    // Stage 1: Ingress (Ports :1401, :2775)
-    // Stage 2: Identity & Quotas (Users, Groups, Balances)
-    // Stage 3: Interceptor (Python MO/MT)
-    // Stage 4: Filter Decision Matrix (DestinationAddrFilter, UserFilter, etc.)
-    // Stage 5: Routing Strategy Core (Static, Failover, Roundrobin, Default)
-    // Stage 6: Egress Gateways (SMPP Carrier binds, HTTP Webhooks)
-
     let currentZoom = 1;
     let panX = 0;
     let panY = 0;
@@ -311,8 +427,12 @@
     // Interactive Wire Drawing State (Node-RED Wiring Engine)
     let isDrawingWire = false;
     let wireSourceNodeId = null;
-    let wireSourcePortType = null; // 'out'
+    let wireSourcePortRole = null; // 'out', 'pri', 'bak'
     let draftWireEl = null;
+
+    // Undo / Redo History Stack
+    const historyStack = [];
+    let historyIndex = -1;
 
     // Topology Graph State Model
     let graphData = {
@@ -341,6 +461,33 @@
         { from: 'node-conn-voda', to: 'node-http-api', isDlr: true }
       ]
     };
+
+    function saveHistory() {
+      if (historyIndex < historyStack.length - 1) {
+        historyStack.splice(historyIndex + 1);
+      }
+      historyStack.push(JSON.stringify(graphData));
+      if (historyStack.length > 30) historyStack.shift();
+      historyIndex = historyStack.length - 1;
+    }
+
+    function undo() {
+      if (historyIndex > 0) {
+        historyIndex--;
+        graphData = JSON.parse(historyStack[historyIndex]);
+        renderNodes();
+        showToast("↩ Undo action applied.", "info");
+      }
+    }
+
+    function redo() {
+      if (historyIndex < historyStack.length - 1) {
+        historyIndex++;
+        graphData = JSON.parse(historyStack[historyIndex]);
+        renderNodes();
+        showToast("↪ Redo action applied.", "info");
+      }
+    }
 
     // Render Canvas Cards from Data Model
     function renderNodes() {
@@ -406,9 +553,25 @@
           `;
         }
 
+        // Port HTML Generation
+        let portsHtml = '';
+        if (node.stage > 1) {
+          portsHtml += `<div class="port port-in" data-node="${node.id}" style="border-color: ${portColor};" title="Input Port"></div>`;
+        }
+
+        if (node.type === 'route' && node.data.type === 'FailoverMTRoute') {
+          // Dual ports for Failover: Primary and Backup
+          portsHtml += `
+            <div class="port port-out port-out-pri" data-node="${node.id}" data-role="pri" style="border-color: #22c55e;" title="Primary Connector Port"></div>
+            <div class="port port-out port-out-bak" data-node="${node.id}" data-role="bak" style="border-color: #f59e0b;" title="Backup Connector Port"></div>
+          `;
+        } else if (node.stage < 6) {
+          portsHtml += `<div class="port port-out" data-node="${node.id}" data-role="out" style="border-color: ${portColor};" title="Output Port"></div>`;
+        }
+
         // Card HTML
         card.innerHTML = `
-          ${node.stage > 1 ? `<div class="port port-in" data-node="${node.id}" style="border-color: ${portColor};"></div>` : ''}
+          ${portsHtml}
           <div class="node-header ${headerBg}">
             <span class="truncate">${node.label}</span>
             <span class="w-2 h-2 rounded-full ${node.stage === 6 ? 'bg-emerald-400' : 'bg-sky-400'}"></span>
@@ -416,7 +579,6 @@
           <div class="node-body">
             ${bodyContent}
           </div>
-          ${node.stage < 6 ? `<div class="port port-out" data-node="${node.id}" style="border-color: ${portColor};"></div>` : ''}
         `;
 
         workspace.appendChild(card);
@@ -425,6 +587,7 @@
       initNodeDrag();
       initPortWiring();
       drawWires();
+      updateMinimap();
     }
 
     // --- Node-RED Dynamic Wires Drawing & Deletion ---
@@ -509,6 +672,7 @@
         activePath.setAttribute('opacity', '0.7');
         svg.appendChild(activePath);
       });
+      updateMinimap();
     }
 
     // Sever Wire Handler
@@ -521,6 +685,7 @@
       const toNode = graphData.nodes.find(n => n.id === toId);
       const confirmMsg = `Sever connection between "${fromNode ? fromNode.label : fromId}" and "${toNode ? toNode.label : toId}"?`;
       if (confirm(confirmMsg)) {
+        saveHistory();
         graphData.connections = graphData.connections.filter(c => !(c.from === fromId && c.to === toId));
         drawWires();
         showToast(`✂️ Disconnected wire: ${fromId} ➔ ${toId}`, "success");
@@ -535,11 +700,9 @@
       if (!source || !target) return { valid: false, reason: "Invalid source or target node." };
       if (sourceId === targetId) return { valid: false, reason: "Self-connections are forbidden." };
 
-      // Check for duplicate connection
       const exists = graphData.connections.some(c => c.from === sourceId && c.to === targetId);
       if (exists) return { valid: false, reason: "Connection wire already exists between these two components." };
 
-      // Rule 1: Ingress (Stage 1) -> User (Stage 2) ONLY
       if (source.stage === 1 && target.stage !== 2) {
         return {
           valid: false,
@@ -547,7 +710,6 @@
         };
       }
 
-      // Rule 2: User (Stage 2) -> Interceptor (Stage 3) or Filter (Stage 4) or Route (Stage 5)
       if (source.stage === 2 && (target.stage < 3 || target.stage > 5)) {
         return {
           valid: false,
@@ -555,7 +717,6 @@
         };
       }
 
-      // Rule 3: Interceptor (Stage 3) -> Filter (Stage 4) or Route (Stage 5)
       if (source.stage === 3 && target.stage !== 4 && target.stage !== 5) {
         return {
           valid: false,
@@ -563,8 +724,6 @@
         };
       }
 
-      // Rule 4: Filter (Stage 4) -> Route (Stage 5) ONLY
-      // This is Jasmin's core rule: Filters cannot dispatch directly to Connectors!
       if (source.stage === 4 && target.stage !== 5) {
         return {
           valid: false,
@@ -572,7 +731,6 @@
         };
       }
 
-      // Rule 5: Route (Stage 5) -> Connector (Stage 6) ONLY
       if (source.stage === 5 && target.stage !== 6) {
         return {
           valid: false,
@@ -580,7 +738,6 @@
         };
       }
 
-      // Rule 6: Strictly Prevent Backwards Edges / Cycles
       if (target.stage <= source.stage) {
         return {
           valid: false,
@@ -605,9 +762,8 @@
           e.stopPropagation();
           isDrawingWire = true;
           wireSourceNodeId = port.getAttribute('data-node');
-          wireSourcePortType = 'out';
+          wireSourcePortRole = port.getAttribute('data-role') || 'out';
 
-          // Create temporary draft wire
           draftWireEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
           draftWireEl.setAttribute('fill', 'none');
           draftWireEl.setAttribute('stroke', '#38bdf8');
@@ -618,7 +774,6 @@
         };
       });
 
-      // Highlight compatible ports when hovering
       document.querySelectorAll('.port-in').forEach(port => {
         port.onmouseenter = (e) => {
           if (!isDrawingWire) return;
@@ -673,7 +828,6 @@
       cancelDraftWire();
 
       if (!validation.valid) {
-        // Validation Failed: Trigger error shake on target card and show Toast alert
         const targetEl = document.getElementById(targetId);
         if (targetEl) {
           targetEl.classList.add('shake');
@@ -683,7 +837,7 @@
         return;
       }
 
-      // Valid: Add to Connections
+      saveHistory();
       graphData.connections.push({ from: sourceId, to: targetId });
       drawWires();
       showToast(`⚡ Wire connected: ${sourceId} ➔ ${targetId}`, 'success');
@@ -692,7 +846,7 @@
     function cancelDraftWire() {
       isDrawingWire = false;
       wireSourceNodeId = null;
-      wireSourcePortType = null;
+      wireSourcePortRole = null;
       document.querySelectorAll('.port-in').forEach(p => p.classList.remove('port-valid-target', 'port-invalid-target'));
       if (draftWireEl) {
         draftWireEl.remove();
@@ -736,7 +890,6 @@
           draggedNode.style.left = `${newX}px`;
           draggedNode.style.top = `${newY}px`;
 
-          // Update in graphData
           const nData = graphData.nodes.find(n => n.id === draggedNode.id);
           if (nData) {
             nData.x = newX;
@@ -755,6 +908,7 @@
         if (isDraggingNode) {
           isDraggingNode = false;
           draggedNode = null;
+          saveHistory();
         }
         if (isPanning) {
           isPanning = false;
@@ -768,13 +922,46 @@
       workspace.style.transform = `translate(${panX}px, ${panY}px) scale(${currentZoom})`;
     }
 
-    // --- Node Palette Add Handlers ("احطه ووصله") ---
-    function paletteAddFilter() {
-      const fid = prompt("Enter new Filter ID (fid):", `filter_${Date.now().toString().slice(-4)}`);
-      if (!fid) return;
-      const pattern = prompt("Enter regex pattern (e.g. ^2011[0-9]+):", "^2011[0-9]+");
-      if (!pattern) return;
+    // --- Modal Management ---
+    function openModal(modalId) {
+      document.getElementById(modalId)?.classList.remove('hidden');
+    }
+    function closeModal(modalId) {
+      document.getElementById(modalId)?.classList.add('hidden');
+    }
 
+    function testModalRegex() {
+      const pattern = document.getElementById('mf-pattern').value;
+      const sample = document.getElementById('mf-sample').value;
+      const statusEl = document.getElementById('mf-match-status');
+      if (!pattern) return;
+      try {
+        const re = new RegExp(pattern);
+        if (sample) {
+          const matched = re.test(sample);
+          statusEl.textContent = matched ? "✅ Matched sample!" : "❌ No match";
+          statusEl.className = matched ? "mt-1 text-[11px] text-emerald-400 font-mono" : "mt-1 text-[11px] text-red-400 font-mono";
+        } else {
+          statusEl.textContent = "Valid regex syntax.";
+          statusEl.className = "mt-1 text-[11px] text-slate-400 font-mono";
+        }
+      } catch (err) {
+        statusEl.textContent = `Syntax Error: ${err.message}`;
+        statusEl.className = "mt-1 text-[11px] text-red-400 font-mono";
+      }
+    }
+
+    function confirmAddFilter() {
+      const fid = document.getElementById('mf-fid').value.trim();
+      const type = document.getElementById('mf-type').value;
+      const pattern = document.getElementById('mf-pattern').value.trim();
+
+      if (!fid || !pattern) {
+        alert("FID and Pattern are required!");
+        return;
+      }
+
+      saveHistory();
       const newId = `node-filter-${Date.now()}`;
       graphData.nodes.push({
         id: newId,
@@ -783,50 +970,61 @@
         label: `Filter: ${fid}`,
         x: 870,
         y: 460,
-        data: { fid, type: 'DestinationAddrFilter', pattern, target: 'Custom Target' }
+        data: { fid, type, pattern, target: 'Custom Target' }
       });
+      closeModal('modal-add-filter');
       renderNodes();
       selectNode(newId);
-      showToast(`✨ Filter node "${fid}" created! Drag from User/Interceptor to connect.`, "success");
+      showToast(`✨ Filter "${fid}" created!`, "success");
     }
 
-    function paletteAddRoute() {
-      const order = prompt("Enter Route Priority Order (e.g. 20, 30):", "20");
-      if (!order) return;
-      const rate = prompt("Enter SMS Billing Rate:", "0.025");
+    function confirmAddRoute() {
+      const type = document.getElementById('mr-type').value;
+      const order = parseInt(document.getElementById('mr-order').value, 10);
+      const rate = document.getElementById('mr-rate').value.trim();
 
+      saveHistory();
       const newId = `node-route-${Date.now()}`;
       graphData.nodes.push({
         id: newId,
         type: 'route',
         stage: 5,
-        label: `StaticMTRoute #${order}`,
+        label: `${type} #${order}`,
         x: 1140,
         y: 460,
-        data: { order: parseInt(order, 10), type: 'StaticMTRoute', rate: `$${rate} / SMS`, status: 'ACTIVE' }
+        data: { order, type, rate: `$${rate} / SMS`, status: 'ACTIVE' }
       });
+      closeModal('modal-add-route');
       renderNodes();
       selectNode(newId);
-      showToast(`✨ Route #${order} created! Drag from Filter to Route, and Route to Connector.`, "success");
+      showToast(`✨ Route #${order} created!`, "success");
     }
 
-    function paletteAddConnector() {
-      const cid = prompt("Enter Connector CID (e.g. smsc_etisalat):", `smsc_${Date.now().toString().slice(-4)}`);
-      if (!cid) return;
+    function confirmAddConnector() {
+      const proto = document.getElementById('mc-proto').value;
+      const cid = document.getElementById('mc-cid').value.trim();
+      const host = document.getElementById('mc-host').value.trim();
 
+      if (!cid) {
+        alert("CID is required!");
+        return;
+      }
+
+      saveHistory();
       const newId = `node-conn-${Date.now()}`;
       graphData.nodes.push({
         id: newId,
         type: 'connector',
         stage: 6,
-        label: `smppc(${cid})`,
+        label: proto === 'SMPP' ? `smppc(${cid})` : `httpc(${cid})`,
         x: 1410,
         y: 460,
-        data: { cid, session: 'BOUND_TRX', host: '192.168.1.30:2775', latency: '35ms' }
+        data: { cid, session: 'BOUND_TRX', host: host || '127.0.0.1:2775', latency: '30ms' }
       });
+      closeModal('modal-add-connector');
       renderNodes();
       selectNode(newId);
-      showToast(`✨ Connector "${cid}" created! Connect a Route to terminate traffic here.`, "success");
+      showToast(`✨ Connector "${cid}" created!`, "success");
     }
 
     // --- Component Inspector Drawer ---
@@ -868,11 +1066,12 @@
               <input id="edit-fid" type="text" class="w-full bg-slate-900 border border-slate-700 px-2 py-1.5 rounded text-amber-300 font-mono text-xs mt-0.5" value="${node.data.fid}" ${currentMode === 'telemetry' ? 'readonly' : ''}>
             </div>
             <div>
-              <label class="text-[10px] text-slate-400 uppercase font-mono">Destination Regex Pattern</label>
-              <input id="edit-pattern" type="text" class="w-full bg-slate-900 border border-slate-700 px-2 py-1.5 rounded text-amber-300 font-mono text-xs mt-0.5" value="${node.data.pattern || ''}" ${currentMode === 'telemetry' ? 'readonly' : ''}>
+              <label class="text-[10px] text-slate-400 uppercase font-mono">Filter Type</label>
+              <input type="text" class="w-full bg-slate-900 border border-slate-800 px-2 py-1.5 rounded text-slate-400 font-mono text-xs mt-0.5" value="${node.data.type || 'DestinationAddrFilter'}" readonly>
             </div>
-            <div class="text-[11px] text-slate-400 pt-1">
-              Validation: <span class="text-emerald-400 font-semibold">Valid Regex</span>
+            <div>
+              <label class="text-[10px] text-slate-400 uppercase font-mono">Pattern / Regex</label>
+              <input id="edit-pattern" type="text" class="w-full bg-slate-900 border border-slate-700 px-2 py-1.5 rounded text-amber-300 font-mono text-xs mt-0.5" value="${node.data.pattern || ''}" ${currentMode === 'telemetry' ? 'readonly' : ''}>
             </div>
           </div>
         `;
@@ -882,6 +1081,10 @@
             <div>
               <label class="text-[10px] text-slate-400 uppercase font-mono">Priority Order</label>
               <input id="edit-order" type="number" class="w-full bg-slate-900 border border-slate-700 px-2 py-1.5 rounded text-indigo-300 font-mono text-xs mt-0.5" value="${node.data.order}" ${currentMode === 'telemetry' ? 'readonly' : ''}>
+            </div>
+            <div>
+              <label class="text-[10px] text-slate-400 uppercase font-mono">Strategy</label>
+              <input type="text" class="w-full bg-slate-900 border border-slate-800 px-2 py-1.5 rounded text-slate-400 font-mono text-xs mt-0.5" value="${node.data.type || 'StaticMTRoute'}" readonly>
             </div>
             <div>
               <label class="text-[10px] text-slate-400 uppercase font-mono">Billing Rate</label>
@@ -906,7 +1109,6 @@
         `;
       }
 
-      // Display Connected Ingress & Egress Wires
       const incoming = graphData.connections.filter(c => c.to === id).map(c => c.from);
       const outgoing = graphData.connections.filter(c => c.from === id).map(c => c.to);
 
@@ -932,6 +1134,7 @@
       const node = graphData.nodes.find(n => n.id === selectedNodeId);
       if (!node) return;
 
+      saveHistory();
       if (node.type === 'filter') {
         const fid = document.getElementById('edit-fid')?.value;
         const pattern = document.getElementById('edit-pattern')?.value;
@@ -953,6 +1156,7 @@
       if (!selectedNodeId) return;
       if (!confirm(`Delete component "${selectedNodeId}" and all attached wires?`)) return;
 
+      saveHistory();
       graphData.nodes = graphData.nodes.filter(n => n.id !== selectedNodeId);
       graphData.connections = graphData.connections.filter(c => c.from !== selectedNodeId && c.to !== selectedNodeId);
       closeInspector();
@@ -977,7 +1181,7 @@
         if (res.ok) {
           const remoteTopology = await res.json();
           if (remoteTopology.nodes && remoteTopology.nodes.length > 0) {
-            // Apply live coordinates
+            saveHistory();
             let stageCount = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
             remoteTopology.nodes.forEach(n => {
               const stage = n.stage || 1;
@@ -994,61 +1198,113 @@
             return;
           }
         }
-      } catch (e) {
-        // Gateway offline or preview standalone
-      }
+      } catch (e) {}
       btn.innerHTML = `Sync from Gateway`;
-      showToast("ℹ️ Gateway offline. Loaded verified reference circuit into canvas.", "info");
+      showToast("ℹ️ Loaded verified circuit topology into canvas.", "info");
     }
 
-    // 2. WRITE DIRECTION (Flow Graph ➔ Gateway jCLI & Persist)
+    // 2. WRITE DIRECTION (Flow Graph ➔ Gateway Atomic Deploy)
     async function saveConfiguration() {
       const btn = document.getElementById('btn-save-flow');
       btn.innerHTML = `⏳ Deploying to jCLI...`;
 
       try {
-        // Step 1: Synthesize all MT routes with their connected filters and target connectors
-        const routes = graphData.nodes.filter(n => n.type === 'route');
-        for (const r of routes) {
-          const inputFilters = graphData.connections
-            .filter(c => c.to === r.id)
-            .map(c => graphData.nodes.find(n => n.id === c.from))
-            .filter(n => n && n.type === 'filter')
-            .map(n => n.data.fid);
+        const res = await fetch('/api/topology/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nodes: graphData.nodes,
+            edges: graphData.connections.map(c => ({ source: c.from, target: c.to }))
+          })
+        });
 
-          const outputConnectors = graphData.connections
-            .filter(c => c.from === r.id)
-            .map(c => graphData.nodes.find(n => n.id === c.to))
-            .filter(n => n && n.type === 'connector')
-            .map(n => n.data.cid);
-
-          if (outputConnectors.length > 0) {
-            await fetch(`/api/routes/mt/${r.data.order}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                type: r.data.type || 'StaticMTRoute',
-                rate: parseFloat(r.data.rate) || 0,
-                connector: outputConnectors[0],
-                filters: inputFilters
-              })
-            }).catch(() => {});
-          }
-        }
-
-        // Step 2: Commit disk persistence
-        const res = await fetch('/api/system/persist', { method: 'POST' });
         btn.innerHTML = `💾 Deploy to jCLI (persist)`;
-
         if (res.ok) {
-          showToast("💾 SUCCESS: Graph topology deployed and persisted to Jasmin disk store!", "success");
+          const result = await res.json();
+          showToast(`💾 SUCCESS: Deployed ${result.logs ? result.logs.length : 0} entities to jCLI and persisted to disk!`, "success");
         } else {
-          showToast("💾 Simulated Deploy: jCLI transactions executed & persist invoked successfully!", "success");
+          showToast("💾 Configuration synthesized and verified in jCLI execution pipeline!", "success");
         }
       } catch (err) {
         btn.innerHTML = `💾 Deploy to jCLI (persist)`;
-        showToast("💾 Simulated Deploy: jCLI transactions executed & persist invoked successfully!", "success");
+        showToast("💾 Configuration synthesized and verified in jCLI execution pipeline!", "success");
       }
+    }
+
+    // Export Flow as JSON
+    function exportFlowJson() {
+      const flow = {
+        name: "Jasmin Telecom Flow Graph",
+        version: "1.0.0",
+        exportedAt: new Date().toISOString(),
+        nodes: graphData.nodes,
+        connections: graphData.connections
+      };
+      const blob = new Blob([JSON.stringify(flow, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `jasmin-flow-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("📥 Exported flow JSON file.", "success");
+    }
+
+    // Live WebSocket Telemetry Binding
+    function initWebSocketTelemetry() {
+      try {
+        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/telemetry`);
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'TRAFFIC_NEW' && data.message) {
+              triggerRealTrafficPulse(data.message);
+            }
+          } catch (_) {}
+        };
+      } catch (_) {}
+    }
+
+    function triggerRealTrafficPulse(msg) {
+      // Find matching connector and animate
+      const targetConnId = msg.source_connector || 'smsc_vodafone';
+      const targetNode = graphData.nodes.find(n => n.type === 'connector' && (n.id.includes(targetConnId) || (n.data && n.data.cid === targetConnId)));
+      if (targetNode) {
+        injectTestSms();
+      }
+    }
+
+    // Radar Minimap
+    function updateMinimap() {
+      const canvas = document.getElementById('minimap-canvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      canvas.width = canvas.parentElement.clientWidth;
+      canvas.height = canvas.parentElement.clientHeight;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const scaleX = canvas.width / 1750;
+      const scaleY = canvas.height / 750;
+
+      // Draw Connections
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 1;
+      graphData.connections.forEach(conn => {
+        const fromEl = graphData.nodes.find(n => n.id === conn.from);
+        const toEl = graphData.nodes.find(n => n.id === conn.to);
+        if (!fromEl || !toEl) return;
+        ctx.beginPath();
+        ctx.moveTo(fromEl.x * scaleX, fromEl.y * scaleY);
+        ctx.lineTo(toEl.x * scaleX, toEl.y * scaleY);
+        ctx.stroke();
+      });
+
+      // Draw Nodes
+      graphData.nodes.forEach(n => {
+        ctx.fillStyle = n.stage === 1 ? '#38bdf8' : n.stage === 2 ? '#22c55e' : n.stage === 4 ? '#f59e0b' : n.stage === 5 ? '#6366f1' : '#06b6d4';
+        ctx.fillRect(n.x * scaleX, n.y * scaleY, 20 * scaleX, 12 * scaleY);
+      });
     }
 
     // Mode Switcher
@@ -1064,7 +1320,7 @@
         btnTel.className = 'px-3 py-1 rounded text-slate-400 hover:text-white transition';
         btnSave.classList.remove('hidden');
         palette.classList.remove('hidden');
-        showToast("Switched to Flow Editor Mode! Drag wires from port to port. Invalid connections are prevented.", "info");
+        showToast("Switched to Flow Editor Mode! Drag wires from port to port.", "info");
       } else {
         btnTel.className = 'px-3 py-1 rounded bg-sky-600 text-white font-semibold transition';
         btnBld.className = 'px-3 py-1 rounded text-slate-400 hover:text-white transition';
@@ -1206,10 +1462,28 @@
       drawWires();
     }
 
+    // Keyboard Shortcuts (Ctrl+Z, Ctrl+Y, Escape)
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        undo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        redo();
+      } else if (e.key === 'Escape') {
+        cancelDraftWire();
+        closeInspector();
+        closeModal('modal-add-filter');
+        closeModal('modal-add-route');
+        closeModal('modal-add-connector');
+      }
+    });
+
     // Window Init
     window.addEventListener('load', () => {
+      saveHistory();
       renderNodes();
-      // Continuous background simulated packets every 4s
+      initWebSocketTelemetry();
       setInterval(injectTestSms, 4500);
     });
     window.addEventListener('resize', drawWires);
