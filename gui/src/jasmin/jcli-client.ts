@@ -282,7 +282,9 @@ export class JCliClient {
       const assignedOrder = order > 0 ? order : 10;
       await this.executeCommand(`order ${assignedOrder}`);
     }
-    await this.executeCommand(`connector ${connector}`);
+    const trimmed = connector.trim();
+    const formatConn = (trimmed.startsWith('httpcc(') || trimmed.startsWith('smppc(')) ? trimmed : `httpcc(${trimmed})`;
+    await this.executeCommand(`connector ${formatConn}`);
     if (type !== 'DefaultRoute' && filters && filters.length > 0) {
       await this.executeCommand(`filters ${filters.join(';')}`);
     }
@@ -381,7 +383,13 @@ export class JCliClient {
     return res.includes('Successfully removed');
   }
 
-  public async createMtRoute(type: string, rate: number, connector: string, order = 0, filters: string[] = []): Promise<boolean> {
+  public async createMtRoute(
+    type: string,
+    rate: number,
+    connector: string | string[],
+    order = 0,
+    filters: string[] = []
+  ): Promise<boolean> {
     await this.executeCommand('mtrouter -a');
     await this.executeCommand(`type ${type}`);
     await this.executeCommand(`rate ${rate}`);
@@ -389,7 +397,21 @@ export class JCliClient {
       const assignedOrder = order > 0 ? order : 10;
       await this.executeCommand(`order ${assignedOrder}`);
     }
-    await this.executeCommand(`connector ${connector}`);
+
+    const formatConn = (c: string) => {
+      const trimmed = c.trim();
+      return (trimmed.startsWith('smppc(') || trimmed.startsWith('httpcc(')) ? trimmed : `smppc(${trimmed})`;
+    };
+
+    if (type === 'FailoverMTRoute' || type === 'RandomRoundrobinMTRoute') {
+      const connList = Array.isArray(connector) ? connector : connector.split(/[;,]/);
+      const formatted = connList.map(c => formatConn(c)).join(';');
+      await this.executeCommand(`connectors ${formatted}`);
+    } else {
+      const singleConn = Array.isArray(connector) ? connector[0] : connector;
+      await this.executeCommand(`connector ${formatConn(singleConn)}`);
+    }
+
     if (type !== 'DefaultRoute' && filters && filters.length > 0) {
       await this.executeCommand(`filters ${filters.join(';')}`);
     }
