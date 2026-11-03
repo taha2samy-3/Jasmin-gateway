@@ -14,12 +14,13 @@ keywords:
 home: https://www.jasminsms.com
 icon: https://raw.githubusercontent.com/jookies/jasmin/master/misc/doc/sources/_static/jasmin-logo-small.png
 sources:
-  - https://github.com/jookies/jasmin
   - https://github.com/taha2samy-3/Jasmin-gateway
+  - https://github.com/jookies/jasmin
 maintainers:
   - name: taha2samy-3
     email: tsamy@trypair.ai
 annotations:
+  org.opencontainers.image.source: https://github.com/taha2samy-3/Jasmin-gateway
   artifacthub.io/license: Apache-2.0
   artifacthub.io/category: integration-and-delivery
   artifacthub.io/screenshots: |
