@@ -123,7 +123,7 @@ export class JCliClient {
       const onData = (chunk: Buffer) => {
         collected += chunk.toString('utf-8');
         // Check if command finished and prompt returned
-        if (collected.includes('jcli :') || collected.includes('> ')) {
+        if (collected.includes('jcli :') || collected.includes('jcli (') || collected.includes('> ')) {
           this.socket?.removeListener('data', onData);
           resolve(collected);
         }
