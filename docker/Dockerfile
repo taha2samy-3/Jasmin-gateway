@@ -14,8 +14,8 @@ RUN python -m venv /opt/venv && \
 # Runtime Stage: Minimal hardened Wolfi Python image (No Alpine, stripped binaries)
 FROM ghcr.io/taha2samy-3/python:3.12 AS runner
 
-LABEL maintainer="Jasmin SMS Gateway"
-LABEL description="Production-ready container image for Jasmin SMS Gateway on hardened Wolfi Linux"
+LABEL maintainer="taha2samy-3 (Unofficial Community Distribution)"
+LABEL description="Unofficial production-ready container image for Jasmin SMS Gateway on hardened Wolfi Linux"
 
 USER root
 

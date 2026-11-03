@@ -18,6 +18,9 @@ RUN npm prune --omit=dev && npm cache clean --force
 # Stage 2: Minimal Production Runtime
 FROM ghcr.io/taha2samy-3/node:22 AS runner
 
+LABEL maintainer="taha2samy-3 (Unofficial Community Distribution)"
+LABEL description="Unofficial Enterprise Web Dashboard for Jasmin SMS Gateway on hardened Wolfi Linux"
+
 WORKDIR /app
 
 ENV NODE_ENV=production \
