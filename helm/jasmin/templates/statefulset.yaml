@@ -176,6 +176,19 @@ spec:
                   key: {{ default "jcli-password" .Values.credentials.jcli.existingSecretKey }}
             - name: HTTP_API_URL
               value: "http://127.0.0.1:{{ .Values.service.ports.httpApi.targetPort }}"
+            - name: RABBITMQ_HOST
+              value: {{ if .Values.rabbitmq.enabled }}{{ printf "%s-rabbitmq" (include "jasmin.fullname" .) | quote }}{{ else }}{{ .Values.externalRabbitMQ.host | quote }}{{ end }}
+            - name: RABBITMQ_PORT
+              value: {{ if .Values.rabbitmq.enabled }}{{ .Values.rabbitmq.port | quote }}{{ else }}{{ .Values.externalRabbitMQ.port | quote }}{{ end }}
+            - name: RABBITMQ_USER
+              value: {{ .Values.credentials.rabbitmq.username | quote }}
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.rabbitmq.existingSecret }}
+                  key: {{ default "rabbitmq-password" .Values.credentials.rabbitmq.existingSecretKey }}
+            - name: RABBITMQ_VHOST
+              value: {{ .Values.credentials.rabbitmq.vhost | quote }}
           volumeMounts:
             - name: config-volume
               mountPath: /etc/jasmin/jasmin.cfg

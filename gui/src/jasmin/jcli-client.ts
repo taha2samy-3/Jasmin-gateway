@@ -192,6 +192,7 @@ export class JCliClient {
     password: string;
     balance?: number;
     httpThroughput?: number;
+    mtSmsQuota?: number;
   }): Promise<boolean> {
     await this.executeCommand('user -a');
     await this.executeCommand(`uid ${user.uid}`);
@@ -204,6 +205,9 @@ export class JCliClient {
     await this.executeCommand('smpps_cred authorization bind 1');
     if (user.balance !== undefined) {
       await this.executeCommand(`mt_messaging_cred quota balance ${user.balance}`);
+    }
+    if (user.mtSmsQuota !== undefined) {
+      await this.executeCommand(`mt_messaging_cred quota sms_count ${user.mtSmsQuota}`);
     }
     if (user.httpThroughput !== undefined) {
       await this.executeCommand(`mt_messaging_cred quota http_throughput ${user.httpThroughput}`);
@@ -343,6 +347,8 @@ export class JCliClient {
     port: number;
     username: string;
     password: string;
+    systemType?: string;
+    bind?: string;
   }): Promise<boolean> {
     await this.executeCommand('smppccm -a');
     await this.executeCommand(`cid ${conn.cid}`);
@@ -350,6 +356,12 @@ export class JCliClient {
     await this.executeCommand(`port ${conn.port}`);
     await this.executeCommand(`username ${conn.username}`);
     await this.executeCommand(`password ${conn.password}`);
+    if (conn.systemType) {
+      await this.executeCommand(`system_type ${conn.systemType}`);
+    }
+    if (conn.bind) {
+      await this.executeCommand(`bind ${conn.bind}`);
+    }
     const res = await this.executeCommand('ok');
     return res.includes('Successfully added');
   }

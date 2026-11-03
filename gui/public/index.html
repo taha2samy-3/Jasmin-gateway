@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Jasmin SMS Gateway — Enterprise Console</title>
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
 </head>
 <body>
   <!-- Header -->
@@ -31,6 +34,9 @@
       <div class="badge" style="font-family: var(--font-mono);">
         jCLI: 127.0.0.1:8990
       </div>
+      <button class="btn btn-outline" id="btn-export-backup" title="Export complete gateway state snapshot (JSON)">
+        Export Snapshot
+      </button>
       <button class="btn btn-outline" id="btn-persist" title="Save in-memory state to disk store">
         Save Config
       </button>
@@ -40,11 +46,13 @@
   <!-- Navigation Tabs -->
   <nav class="tabs">
     <button class="tab-btn active" data-tab="overview">NOC Cockpit</button>
+    <button class="tab-btn" data-tab="traffic">Live Traffic & DLR</button>
+    <button class="tab-btn" data-tab="terminal">jCLI Terminal</button>
     <button class="tab-btn" data-tab="users">Users & Accounts</button>
     <button class="tab-btn" data-tab="connectors">Connectors (HTTP & SMPP)</button>
-    <button class="tab-btn" data-tab="routes">Routing Engine (MO/MT)</button>
+    <button class="tab-btn" data-tab="routes">Routing Engine & Simulator</button>
     <button class="tab-btn" data-tab="sms-tester">SMS Sandbox</button>
-    <button class="tab-btn" data-tab="config">Configuration (jasmin.cfg)</button>
+    <button class="tab-btn" data-tab="config">Config & Backup</button>
   </nav>
 
   <!-- Main Content -->
@@ -59,83 +67,49 @@
           <div class="card-subtext" id="stat-http-success">Success: 0 | Errors: 0</div>
         </div>
         <div class="card">
-          <div class="card-title">Total Active Users</div>
-          <div class="card-value" id="stat-total-users">0</div>
-          <div class="card-subtext" id="stat-total-groups">0 Groups configured</div>
+          <div class="card-title">SMPP Submit SM (Outbound)</div>
+          <div class="card-value" id="stat-smpps-submits">0</div>
+          <div class="card-subtext" id="stat-smpps-errors">Errors: 0 | Throttled: 0</div>
         </div>
         <div class="card">
-          <div class="card-title">HTTP Connectors</div>
-          <div class="card-value" id="stat-http-connectors">0</div>
-          <div class="card-subtext">Active Webhook forwarders</div>
+          <div class="card-title">SMPP Binds Active</div>
+          <div class="card-value" id="stat-smpps-binds">0</div>
+          <div class="card-subtext" id="stat-smpps-bind-types">TRX: 0 | RX: 0 | TX: 0</div>
         </div>
         <div class="card">
-          <div class="card-title">MO Routing Rules</div>
-          <div class="card-value" id="stat-mo-routes">0</div>
-          <div class="card-subtext">Inbound message policies</div>
+          <div class="card-title">Live Message Stream</div>
+          <div class="card-value" id="stat-traffic-total">0</div>
+          <div class="card-subtext" id="stat-traffic-summary">Delivered: 0 | Errors: 0</div>
         </div>
       </div>
 
-      <!-- Real-time Traffic Chart -->
-      <div class="card" style="margin-bottom: 1.5rem;">
+      <!-- Real-time Throughput Telemetry Chart -->
+      <div class="card" style="margin-bottom: 2rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-          <div class="card-title" style="margin: 0;">Traffic Velocity & Subsystem Telemetry (Requests / Sec)</div>
-          <span style="font-size: 0.8rem; color: #ffffff;">● Live WebSocket Telemetry Feed</span>
+          <h2 style="font-size: 1.25rem;">Real-Time Telecom Throughput (TPS)</h2>
+          <span class="badge" style="background: rgba(34, 197, 94, 0.1); color: #22c55e;">POLLING INTERVAL: 2.5s</span>
         </div>
-        <div style="height: 220px;">
-          <canvas id="trafficChart"></canvas>
-        </div>
-      </div>
-
-      <!-- Subsystem Telemetry & Analytics Grid (3 Specialized Charts) -->
-      <div class="charts-grid-3">
-        <!-- 1. Status & Error Distribution -->
-        <div class="chart-card">
-          <div class="chart-card-header">
-            <h4>Delivery & Status Ratio</h4>
-            <span class="badge badge-outline" id="badge-total-events">Live Events</span>
-          </div>
-          <div class="chart-container">
-            <canvas id="statusChart"></canvas>
-          </div>
-        </div>
-
-        <!-- 2. SMPP Protocol Binds Breakdown -->
-        <div class="chart-card">
-          <div class="chart-card-header">
-            <h4>SMPP Protocol Sessions</h4>
-            <span class="badge badge-outline">Port 2775</span>
-          </div>
-          <div class="chart-container">
-            <canvas id="smppBindsChart"></canvas>
-          </div>
-        </div>
-
-        <!-- 3. Tenant Credit Liquidity -->
-        <div class="chart-card">
-          <div class="chart-card-header">
-            <h4>Account Credit Liquidity</h4>
-            <span class="badge badge-outline">Balance ($)</span>
-          </div>
-          <div class="chart-container">
-            <canvas id="liquidityChart"></canvas>
-          </div>
+        <div style="height: 280px; width: 100%;">
+          <canvas id="throughputChart"></canvas>
         </div>
       </div>
 
-      <!-- Live Core Stats Table -->
+      <!-- Active SMPP Links Status Overview -->
       <div class="card">
-        <div class="card-title">Jasmin Twisted Core Protocol Telemetry</div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h2 style="font-size: 1.25rem;">Active Carrier SMPP Connectors</h2>
+          <button class="btn btn-outline" id="btn-refresh-overview">Refresh NOC Status</button>
+        </div>
         <div class="table-container">
-          <table id="table-overview-stats">
+          <table id="table-overview-connectors">
             <thead>
               <tr>
-                <th>Subsystem</th>
-                <th>Created At</th>
-                <th>Requests Count</th>
-                <th>Success</th>
-                <th>Auth Errors</th>
-                <th>Routing Errors</th>
-                <th>Last Active</th>
+                <th>Connector ID</th>
+                <th>Status</th>
+                <th>Bound Since</th>
+                <th>Submits (MT)</th>
+                <th>Delivers (MO)</th>
+                <th>Errors</th>
               </tr>
             </thead>
             <tbody>
@@ -146,125 +120,258 @@
       </div>
     </div>
 
-    <!-- 2. USERS TAB -->
+    <!-- 2. LIVE TRAFFIC & DLR MONITOR TAB -->
+    <div class="tab-pane" id="tab-traffic">
+      <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 1.5rem;">
+        <div class="card" style="padding: 1rem;">
+          <div class="card-title">Total Messages</div>
+          <div class="card-value" id="traffic-card-total" style="font-size: 1.8rem;">0</div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+          <div class="card-title">Submitted</div>
+          <div class="card-value" id="traffic-card-submitted" style="font-size: 1.8rem; color: #38bdf8;">0</div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+          <div class="card-title">SMSC Accepted (ESME_ROK)</div>
+          <div class="card-value" id="traffic-card-roks" style="font-size: 1.8rem; color: #22c55e;">0</div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+          <div class="card-title">Delivered (DLR)</div>
+          <div class="card-value" id="traffic-card-delivered" style="font-size: 1.8rem; color: #a855f7;">0</div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+          <div class="card-title">Errors / Undelivered</div>
+          <div class="card-value" id="traffic-card-errors" style="font-size: 1.8rem; color: #ef4444;">0</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <!-- Filter Controls -->
+        <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between; margin-bottom: 1.25rem;">
+          <div style="display: flex; gap: 0.5rem; flex: 1; min-width: 280px;">
+            <input type="text" class="form-control" id="traffic-search-input" placeholder="Search by Message ID, Sender, Recipient, Content, CID...">
+            <select class="form-control" id="traffic-status-filter" style="max-width: 180px;">
+              <option value="">All Statuses</option>
+              <option value="SUBMITTED">SUBMITTED</option>
+              <option value="ESME_ROK">ESME_ROK (Accepted)</option>
+              <option value="DELIVRD">DELIVRD (Delivered)</option>
+              <option value="UNDELIV">UNDELIV (Undelivered)</option>
+            </select>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <label style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-muted); cursor: pointer;">
+              <input type="checkbox" id="traffic-autoscroll" checked> Auto-Scroll
+            </label>
+            <button class="btn btn-outline" id="btn-export-traffic-csv">Export CSV</button>
+            <button class="btn btn-outline" id="btn-clear-traffic" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);">Clear</button>
+          </div>
+        </div>
+
+        <!-- Live Traffic Table -->
+        <div class="table-container" style="max-height: 520px; overflow-y: auto;">
+          <table id="table-traffic">
+            <thead>
+              <tr>
+                <th style="width: 100px;">Time</th>
+                <th>Message ID</th>
+                <th>Sender (Source)</th>
+                <th>Recipient (Dest)</th>
+                <th>Content</th>
+                <th>Connector</th>
+                <th>Status</th>
+                <th>Latency</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="table-traffic-body">
+              <tr>
+                <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                  Listening to real-time AMQP message stream... Send a message to see live traffic!
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. INTERACTIVE jCLI WEB TERMINAL TAB -->
+    <div class="tab-pane" id="tab-terminal">
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <div>
+            <h2 style="font-size: 1.25rem;">Interactive jCLI Terminal (REPL)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Direct WebSocket command-line session to Jasmin's internal console (127.0.0.1:8990).</p>
+          </div>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn btn-outline" onclick="sendTerminalCommand('stats')">stats</button>
+            <button class="btn btn-outline" onclick="sendTerminalCommand('smppccm -l')">smppccm -l</button>
+            <button class="btn btn-outline" onclick="sendTerminalCommand('mtrouter -l')">mtrouter -l</button>
+            <button class="btn btn-outline" onclick="sendTerminalCommand('user -l')">user -l</button>
+            <button class="btn btn-outline" onclick="reconnectTerminal()">Reconnect</button>
+          </div>
+        </div>
+
+        <div id="terminal-container" style="height: 480px; width: 100%; background: #0b0f19; border-radius: 8px; padding: 8px; overflow: hidden;"></div>
+      </div>
+    </div>
+
+    <!-- 4. USERS & ACCOUNTS TAB -->
     <div class="tab-pane" id="tab-users">
+      <div class="card" style="margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+          <div>
+            <h2 style="font-size: 1.25rem;">Groups Configuration</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Organize users into permission pools with shared routing policies.</p>
+          </div>
+          <button class="btn btn-primary" id="btn-open-add-group">+ Add Group</button>
+        </div>
+        <div class="table-container">
+          <table id="table-groups">
+            <thead>
+              <tr>
+                <th>Group ID (GID)</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
           <div>
-            <h2 style="font-size: 1.25rem;">ESME User Accounts & Balances</h2>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">Manage SMS clients, system credentials, credit limits, and throughput quotas.</p>
+            <h2 style="font-size: 1.25rem;">User Accounts (HTTP & SMPP ESME)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Manage SMS client credentials, balance charging, quotas, and throughput limits.</p>
           </div>
           <button class="btn btn-primary" id="btn-open-add-user">+ Add User</button>
         </div>
-
         <div class="table-container">
           <table id="table-users">
             <thead>
               <tr>
-                <th>User ID</th>
-                <th>Group ID</th>
+                <th>User ID (UID)</th>
+                <th>Group (GID)</th>
                 <th>Username</th>
-                <th>Balance (Credits)</th>
+                <th>Balance</th>
                 <th>MT SMS Quota</th>
-                <th>Throughput (TPS)</th>
+                <th>MPS Limit</th>
                 <th>Actions</th>
               </tr>
             </thead>
-            <tbody>
-              <!-- Populated dynamically -->
-            </tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
     </div>
 
-    <!-- 3. CONNECTORS TAB -->
+    <!-- 5. CONNECTORS TAB -->
     <div class="tab-pane" id="tab-connectors">
-      <!-- Upstream SMPP Connectors -->
       <div class="card" style="margin-bottom: 2rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
           <div>
-            <h2 style="font-size: 1.25rem;">Upstream SMPP Client Connectors (SMSC)</h2>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">Bidirectional connections to mobile carriers and SMS gateways (SMPP v3.4).</p>
+            <h2 style="font-size: 1.25rem;">SMPP Client Connectors (Upstream SMSC)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">High-volume telecommunications binds to upstream carrier SMSCs.</p>
           </div>
-          <button class="btn btn-primary" id="btn-open-add-smpp-connector">+ Add SMPP Connector</button>
+          <button class="btn btn-primary" id="btn-open-add-smpp">+ Add SMPP Connector</button>
         </div>
-
         <div class="table-container">
           <table id="table-smpp-connectors">
             <thead>
               <tr>
                 <th>Connector ID</th>
-                <th>Service Status</th>
-                <th>Session State</th>
-                <th>Starts</th>
-                <th>Stops</th>
+                <th>Status</th>
+                <th>Submits</th>
+                <th>Delivers</th>
+                <th>QoS Errors</th>
                 <th>Actions</th>
               </tr>
             </thead>
-            <tbody>
-              <!-- Populated dynamically -->
-            </tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
 
-      <!-- HTTP Client Connectors -->
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
           <div>
-            <h2 style="font-size: 1.25rem;">HTTP Client Connectors (Webhooks)</h2>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">Configure HTTP destinations for forwarding inbound Mobile Originated (MO) SMS.</p>
+            <h2 style="font-size: 1.25rem;">HTTP Client Connectors (Inbound Delivery Webhooks)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Forward inbound MO SMS messages to your application webhook endpoints.</p>
           </div>
-          <button class="btn btn-primary" id="btn-open-add-connector">+ Add HTTP Connector</button>
+          <button class="btn btn-primary" id="btn-open-add-http">+ Add HTTP Connector</button>
         </div>
-
         <div class="table-container">
-          <table id="table-connectors">
+          <table id="table-http-connectors">
             <thead>
               <tr>
-                <th>Connector ID (CID)</th>
-                <th>Type</th>
+                <th>Connector ID</th>
                 <th>Method</th>
                 <th>Target Webhook URL</th>
                 <th>Actions</th>
               </tr>
             </thead>
-            <tbody>
-              <!-- Populated dynamically -->
-            </tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
     </div>
 
-    <!-- 4. ROUTES TAB -->
+    <!-- 6. ROUTING ENGINE & SIMULATOR TAB -->
     <div class="tab-pane" id="tab-routes">
+      <!-- Route Match Simulator -->
+      <div class="card" style="margin-bottom: 2rem; border-left: 4px solid var(--accent-color);">
+        <h2 style="font-size: 1.25rem; margin-bottom: 0.5rem;">Interactive Route Match Simulator</h2>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.25rem;">
+          Test any combination of User, Sender ID, Recipient Phone, and Message Content against active filters and MT routes to visualize exact routing resolution.
+        </p>
+
+        <form id="form-simulate-route" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; align-items: flex-end;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label>User UID (Optional)</label>
+            <input type="text" class="form-control" id="sim-uid" placeholder="e.g. client_01">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label>Sender (Source Addr)</label>
+            <input type="text" class="form-control" id="sim-source" placeholder="e.g. VODAFONE">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label>Recipient (Dest Addr)</label>
+            <input type="text" class="form-control" id="sim-dest" required placeholder="e.g. +201012345678">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label>Message Content</label>
+            <input type="text" class="form-control" id="sim-content" placeholder="e.g. Verification Code 1234">
+          </div>
+          <button type="submit" class="btn btn-primary" style="height: 42px;">Test Route Match</button>
+        </form>
+
+        <div id="sim-result" style="display: none; margin-top: 1.25rem; padding: 1rem; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);"></div>
+      </div>
+
       <!-- MT Routing Table -->
       <div class="card" style="margin-bottom: 2rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
           <div>
             <h2 style="font-size: 1.25rem;">Outbound SMS Routing Engine (MT Router)</h2>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">Route outgoing SMS to upstream SMPP connectors with per-message billing rates.</p>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Route outgoing SMS across Default, Static, RoundRobin, and Failover strategies.</p>
           </div>
           <button class="btn btn-primary" id="btn-open-add-mt-route">+ Add MT Route</button>
         </div>
-
         <div class="table-container">
           <table id="table-mt-routes">
             <thead>
               <tr>
                 <th>Order</th>
                 <th>Strategy Type</th>
-                <th>Billing Rate (Credits)</th>
-                <th>Target Upstream Connector</th>
+                <th>Billing Rate</th>
+                <th>Target Connector</th>
                 <th>Filters</th>
                 <th>Actions</th>
               </tr>
             </thead>
-            <tbody>
-              <!-- Populated dynamically -->
-            </tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
@@ -274,210 +381,158 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
           <div>
             <h2 style="font-size: 1.25rem;">Inbound SMS Routing Engine (MO Router)</h2>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">Route incoming messages to HTTP webhooks or user accounts with prioritization rules.</p>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Route incoming messages to HTTP webhooks or user accounts.</p>
           </div>
           <button class="btn btn-primary" id="btn-open-add-route">+ Add MO Route</button>
         </div>
-
         <div class="table-container">
-          <table id="table-routes">
+          <table id="table-mo-routes">
             <thead>
               <tr>
                 <th>Order</th>
                 <th>Strategy Type</th>
-                <th>Target Connector</th>
+                <th>Target Webhook Connector</th>
                 <th>Filters</th>
                 <th>Actions</th>
               </tr>
             </thead>
-            <tbody>
-              <!-- Populated dynamically -->
-            </tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
 
-      <!-- Traffic Routing Filters Table (filtersm) -->
-      <div class="card" style="margin-bottom: 2rem;">
+      <!-- Filters Table -->
+      <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
           <div>
-            <h2 style="font-size: 1.25rem;">Traffic Policy Filters (filtersm)</h2>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">Regex rules for destination phone prefixes, sender IDs, content inspection, and user quotas.</p>
+            <h2 style="font-size: 1.25rem;">Traffic Filters Engine</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Regex rules, destination prefix filters, user tags, and pass-through policies.</p>
           </div>
           <button class="btn btn-primary" id="btn-open-add-filter">+ Add Filter</button>
         </div>
-
         <div class="table-container">
           <table id="table-filters">
             <thead>
               <tr>
-                <th>Filter ID</th>
+                <th>Filter ID (FID)</th>
                 <th>Filter Type</th>
-                <th>Scope</th>
-                <th>Pattern / Expression</th>
+                <th>Configuration Expression</th>
+                <th>Associated Routes</th>
                 <th>Actions</th>
               </tr>
             </thead>
-            <tbody>
-              <!-- Populated dynamically -->
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Message Interceptors Table (interceptorm) -->
-      <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-          <div>
-            <h2 style="font-size: 1.25rem;">Python Message Interceptors (interceptorm)</h2>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">Scriptable Python interception rules for dynamic content transformation, billing enrichment, and security.</p>
-          </div>
-        </div>
-
-        <div class="table-container">
-          <table id="table-interceptors">
-            <thead>
-              <tr>
-                <th>Order</th>
-                <th>Direction</th>
-                <th>Strategy Type</th>
-                <th>Script Handler</th>
-                <th>Filters</th>
-              </tr>
-            </thead>
-            <tbody>
-              <!-- Populated dynamically -->
-            </tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
     </div>
 
-    <!-- 5. SMS TESTER TAB -->
+    <!-- 7. SMS SANDBOX TAB -->
     <div class="tab-pane" id="tab-sms-tester">
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
-        <div class="card">
-          <h2 style="font-size: 1.25rem; margin-bottom: 0.5rem;">SMS Dispatch Sandbox</h2>
-          <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">Send test MT messages through Jasmin HTTP API (Port 1401).</p>
+      <div class="card" style="max-width: 680px; margin: 0 auto;">
+        <h2 style="font-size: 1.25rem; margin-bottom: 0.5rem;">SMS Dispatch Sandbox</h2>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">
+          Inject test messages directly into Jasmin's HTTP API (Port 1401) to verify billing, routing, and carrier delivery.
+        </p>
 
-          <form id="form-sms-send">
+        <form id="form-send-sms">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
             <div class="form-group">
-              <label>Client Username</label>
-              <input type="text" class="form-control" id="sms-user" placeholder="Enter ESME username" required>
+              <label>API Username</label>
+              <input type="text" class="form-control" id="sms-user" required placeholder="e.g. testuser">
             </div>
             <div class="form-group">
-              <label>Password</label>
-              <input type="password" class="form-control" id="sms-pass" placeholder="Enter ESME password" required>
+              <label>API Password</label>
+              <input type="password" class="form-control" id="sms-pass" required placeholder="••••••••">
             </div>
-            <div class="form-group">
-              <label>Recipient Phone Number (To)</label>
-              <input type="text" class="form-control" id="sms-to" placeholder="e.g. +201012345678" required>
-            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
             <div class="form-group">
               <label>Sender ID (From)</label>
-              <input type="text" class="form-control" id="sms-from" placeholder="Optional sender ID (e.g. GATEWAY)">
+              <input type="text" class="form-control" id="sms-from" value="JASMIN" placeholder="e.g. JASMIN">
             </div>
             <div class="form-group">
-              <label>Message Content</label>
-              <textarea class="form-control" id="sms-content" rows="3" placeholder="Type SMS content to dispatch..." required></textarea>
+              <label>Recipient MSISDN (To)</label>
+              <input type="text" class="form-control" id="sms-to" required placeholder="e.g. +201012345678">
             </div>
-            <button type="submit" class="btn btn-success" style="width: 100%;">🚀 Dispatch SMS</button>
-          </form>
-        </div>
+          </div>
+          <div class="form-group">
+            <label>Message Content</label>
+            <textarea class="form-control" id="sms-content" rows="4" required placeholder="Enter SMS text here..."></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1rem;">Send Test Message</button>
+        </form>
 
-        <div class="card">
-          <h2 style="font-size: 1.25rem; margin-bottom: 0.5rem;">API Dispatch Response</h2>
-          <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">Live response from Jasmin HTTP `/send` endpoint.</p>
-          <pre id="sms-response-log" style="background: var(--bg-canvas); padding: 1.25rem; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.85rem; min-height: 200px; color: var(--accent-white); border: 1px solid var(--border-subtle); overflow-x: auto;">Awaiting SMS submission...</pre>
-        </div>
+        <div id="sms-result-box" style="margin-top: 1.5rem; display: none;"></div>
       </div>
     </div>
 
-    <!-- 6. CONFIGURATION TAB -->
+    <!-- 8. CONFIGURATION & BACKUP TAB -->
     <div class="tab-pane" id="tab-config">
-      <!-- Sidecar Pod Architecture Banner -->
-      <div class="config-banner">
-        <div>
-          <div style="font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem;">
-            <span>❖</span> Kubernetes Pod Sidecar Architecture
+      <div class="card" style="margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+          <div>
+            <h2 style="font-size: 1.25rem;">Active Daemon Configuration (`jasmin.cfg`)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Live view of running daemon binds, worker counts, and timeout properties.</p>
           </div>
-          <div style="color: var(--text-muted); font-size: 0.82rem;">
-            Jasmin SMS Gateway and Enterprise GUI run as separate containers in the same Pod, sharing the <code>localhost</code> network namespace and reading <code>/etc/jasmin/jasmin.cfg</code>.
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn btn-outline" id="btn-export-backup-2">Export Snapshot (JSON)</button>
+            <button class="btn btn-primary" id="btn-persist-cfg">Save Config (persist)</button>
           </div>
         </div>
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-          <span class="badge badge-success">Shared Net: localhost</span>
-          <span class="badge badge-outline" id="config-file-path">/etc/jasmin/jasmin.cfg</span>
-        </div>
-      </div>
-
-      <!-- Config Summary Cards -->
-      <div class="metrics-grid">
-        <div class="card">
-          <div class="card-title">jCLI Socket</div>
-          <div class="card-value" style="font-size: 1.35rem;" id="cfg-jcli-socket">127.0.0.1:8990</div>
-          <div class="card-subtext" id="cfg-jcli-user">Admin: jcliadmin (MD5 Auth)</div>
-        </div>
-        <div class="card">
-          <div class="card-title">HTTP API Listener</div>
-          <div class="card-value" style="font-size: 1.35rem;" id="cfg-http-socket">0.0.0.0:1401</div>
-          <div class="card-subtext">Rest API (/send, /balance, /rate)</div>
-        </div>
-        <div class="card">
-          <div class="card-title">SMPP Server Listener</div>
-          <div class="card-value" style="font-size: 1.35rem;" id="cfg-smpp-socket">0.0.0.0:2775</div>
-          <div class="card-subtext" id="cfg-smpp-billing">Billing Feature: Enabled</div>
-        </div>
-        <div class="card">
-          <div class="card-title">State Persistence</div>
-          <div class="card-value" style="font-size: 1.35rem;" id="cfg-store-dir">/etc/jasmin/store</div>
-          <div class="card-subtext">Persistence Engine: JFC Store</div>
-        </div>
-      </div>
-
-      <!-- Syntax-Highlighted Raw Config Viewer -->
-      <div class="config-code-container">
-        <div class="config-code-header">
-          <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <span>⚙</span> Active INI Configuration: <strong id="cfg-header-path">/etc/jasmin/jasmin.cfg</strong>
-          </div>
-          <button class="btn btn-outline" style="padding: 0.25rem 0.65rem; font-size: 0.75rem;" onclick="copyConfig()">
-            Copy Config
-          </button>
-        </div>
-        <pre class="config-code-pre" id="config-raw-view">Loading configuration from shared pod volume...</pre>
+        <div id="config-sections-container"></div>
       </div>
     </div>
 
   </main>
 
+  <!-- MODAL: DEEP PDU INSPECTOR -->
+  <div class="modal-overlay" id="modal-pdu-inspector">
+    <div class="modal" style="max-width: 680px;">
+      <div class="modal-header">
+        <h3 id="pdu-modal-title">PDU Deep Inspector</h3>
+        <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
+      </div>
+      <div id="pdu-modal-body" style="font-family: var(--font-mono); font-size: 0.82rem; background: var(--bg-card); padding: 1rem; border-radius: 6px; overflow-x: auto; max-height: 480px;"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" onclick="closeModals()">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL: ADD USER -->
   <div class="modal-overlay" id="modal-add-user">
     <div class="modal">
       <div class="modal-header">
-        <h3>Create New ESME User</h3>
+        <h3>Create User Account</h3>
         <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
       </div>
       <form id="form-add-user">
         <div class="form-group">
           <label>User ID (UID)</label>
-          <input type="text" class="form-control" id="new-user-uid" required placeholder="e.g. client_01">
+          <input type="text" class="form-control" id="new-user-uid" required placeholder="e.g. u1">
         </div>
         <div class="form-group">
           <label>Group ID (GID)</label>
-          <input type="text" class="form-control" id="new-user-gid" required placeholder="e.g. default_group">
+          <input type="text" class="form-control" id="new-user-gid" required placeholder="e.g. g1">
         </div>
         <div class="form-group">
           <label>Username</label>
-          <input type="text" class="form-control" id="new-user-username" required placeholder="Enter username">
+          <input type="text" class="form-control" id="new-user-username" required placeholder="e.g. client01">
         </div>
         <div class="form-group">
           <label>Password</label>
-          <input type="password" class="form-control" id="new-user-password" required placeholder="Enter password">
+          <input type="password" class="form-control" id="new-user-password" required placeholder="••••••••">
         </div>
-        <div class="form-group">
-          <label>Initial Balance (Credits)</label>
-          <input type="number" class="form-control" id="new-user-balance" value="0.0" step="0.1">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div class="form-group">
+            <label>Credit Balance</label>
+            <input type="number" step="0.01" class="form-control" id="new-user-balance" value="100.00">
+          </div>
+          <div class="form-group">
+            <label>Throughput (MPS)</label>
+            <input type="number" class="form-control" id="new-user-throughput" value="50">
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
@@ -487,68 +542,85 @@
     </div>
   </div>
 
-  <!-- MODAL: ADD HTTP CONNECTOR -->
-  <div class="modal-overlay" id="modal-add-connector">
+  <!-- MODAL: ADD GROUP -->
+  <div class="modal-overlay" id="modal-add-group">
     <div class="modal">
       <div class="modal-header">
-        <h3>Create HTTP Client Connector</h3>
+        <h3>Create Group</h3>
         <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
       </div>
-      <form id="form-add-connector">
+      <form id="form-add-group">
         <div class="form-group">
-          <label>Connector ID (CID)</label>
-          <input type="text" class="form-control" id="new-conn-cid" required placeholder="e.g. webhook_prod_01">
-        </div>
-        <div class="form-group">
-          <label>Target Webhook URL</label>
-          <input type="url" class="form-control" id="new-conn-url" required placeholder="http://webhook.default.svc.cluster.local:8080/sms">
-        </div>
-        <div class="form-group">
-          <label>HTTP Method</label>
-          <select class="form-control" id="new-conn-method">
-            <option value="POST">POST</option>
-            <option value="GET">GET</option>
-          </select>
+          <label>Group ID (GID)</label>
+          <input type="text" class="form-control" id="new-group-gid" required placeholder="e.g. wholesale_group">
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
-          <button type="submit" class="btn btn-primary">Create Connector</button>
+          <button type="submit" class="btn btn-primary">Create Group</button>
         </div>
       </form>
     </div>
   </div>
 
   <!-- MODAL: ADD SMPP CONNECTOR -->
-  <div class="modal-overlay" id="modal-add-smpp-connector">
+  <div class="modal-overlay" id="modal-add-smpp">
     <div class="modal">
       <div class="modal-header">
-        <h3>Create SMPP Client Connector</h3>
+        <h3>Add SMPP Client Connector</h3>
         <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
       </div>
-      <form id="form-add-smpp-connector">
+      <form id="form-add-smpp">
         <div class="form-group">
           <label>Connector ID (CID)</label>
-          <input type="text" class="form-control" id="new-smpp-cid" required placeholder="e.g. smpp_carrier_01">
+          <input type="text" class="form-control" id="new-smpp-cid" required placeholder="e.g. smsc_carrier_01">
         </div>
-        <div class="form-group">
-          <label>Remote Host / IP</label>
-          <input type="text" class="form-control" id="new-smpp-host" required placeholder="127.0.0.1 or smpp.carrier.com">
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">
+          <div class="form-group">
+            <label>Host / IP</label>
+            <input type="text" class="form-control" id="new-smpp-host" required placeholder="e.g. 192.168.1.10">
+          </div>
+          <div class="form-group">
+            <label>Port</label>
+            <input type="number" class="form-control" id="new-smpp-port" required value="2775">
+          </div>
         </div>
-        <div class="form-group">
-          <label>Port</label>
-          <input type="number" class="form-control" id="new-smpp-port" value="2775" required>
-        </div>
-        <div class="form-group">
-          <label>System ID (Username)</label>
-          <input type="text" class="form-control" id="new-smpp-user" required placeholder="smpp_username">
-        </div>
-        <div class="form-group">
-          <label>Password</label>
-          <input type="password" class="form-control" id="new-smpp-pass" required placeholder="SecretPass123">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div class="form-group">
+            <label>System ID (Username)</label>
+            <input type="text" class="form-control" id="new-smpp-username" required placeholder="smpp_client">
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" class="form-control" id="new-smpp-password" required placeholder="••••••••">
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
-          <button type="submit" class="btn btn-primary">Create Connector</button>
+          <button type="submit" class="btn btn-primary">Add Connector</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD HTTP CONNECTOR -->
+  <div class="modal-overlay" id="modal-add-http">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Add HTTP Webhook Connector</h3>
+        <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
+      </div>
+      <form id="form-add-http">
+        <div class="form-group">
+          <label>Connector ID (CID)</label>
+          <input type="text" class="form-control" id="new-http-cid" required placeholder="e.g. webhook_prod">
+        </div>
+        <div class="form-group">
+          <label>Target URL</label>
+          <input type="url" class="form-control" id="new-http-url" required placeholder="http://192.168.1.50:8080/inbound-sms">
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Add Webhook</button>
         </div>
       </form>
     </div>
@@ -558,44 +630,51 @@
   <div class="modal-overlay" id="modal-add-mt-route">
     <div class="modal">
       <div class="modal-header">
-        <h3>Create MT Route (Outbound)</h3>
+        <h3>Create Outbound MT Route</h3>
         <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
       </div>
       <form id="form-add-mt-route">
         <div class="form-group">
           <label>Strategy Type</label>
           <select class="form-control" id="new-mt-route-type">
-            <option value="DefaultRoute">DefaultRoute</option>
-            <option value="StaticMTRoute">StaticMTRoute</option>
-            <option value="RandomRoundrobinMTRoute">RandomRoundrobinMTRoute</option>
-            <option value="FailoverMTRoute">FailoverMTRoute</option>
+            <option value="DefaultRoute">DefaultRoute (Fallback Catch-all)</option>
+            <option value="StaticMTRoute">StaticMTRoute (Direct Connector Bind)</option>
+            <option value="RoundRobinMTRoute">RoundRobinMTRoute (Even Balancing)</option>
+            <option value="RandomRoundRobinMTRoute">RandomRoundRobinMTRoute (Weighted Random)</option>
+            <option value="FailoverMTRoute">FailoverMTRoute (Primary with Automatic Fallback)</option>
           </select>
         </div>
-        <div class="form-group">
-          <label>Billing Rate per SMS (Credits)</label>
-          <input type="number" step="0.001" class="form-control" id="new-mt-route-rate" value="0.0" required>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div class="form-group">
+            <label>Order (Priority)</label>
+            <input type="number" class="form-control" id="new-mt-route-order" value="0" required>
+          </div>
+          <div class="form-group">
+            <label>Billing Rate (Credits)</label>
+            <input type="number" step="0.001" class="form-control" id="new-mt-route-rate" value="1.0">
+          </div>
         </div>
         <div class="form-group">
           <label>Target Connector ID</label>
-          <input type="text" class="form-control" id="new-mt-route-cid" required placeholder="e.g. smppc(smpp_upstream_01)">
+          <input type="text" class="form-control" id="new-mt-route-cid" required placeholder="e.g. smppc(smsc_carrier_01)">
         </div>
         <div class="form-group">
-          <label>Attached Filters (Optional)</label>
-          <input type="text" class="form-control" id="new-mt-route-filters" placeholder="e.g. egypt_prefix">
+          <label>Filters (Comma-separated FIDs)</label>
+          <input type="text" class="form-control" id="new-mt-route-filters" placeholder="e.g. egypt_prefix, vip_user">
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
-          <button type="submit" class="btn btn-primary">Create Route</button>
+          <button type="submit" class="btn btn-primary">Create MT Route</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- MODAL: ADD FILTER -->
+  <!-- MODAL: ADD FILTER WITH LIVE REGEX TESTER -->
   <div class="modal-overlay" id="modal-add-filter">
-    <div class="modal">
+    <div class="modal" style="max-width: 580px;">
       <div class="modal-header">
-        <h3>Create Route Traffic Filter</h3>
+        <h3>Create Traffic Filter</h3>
         <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
       </div>
       <form id="form-add-filter">
@@ -606,10 +685,11 @@
         <div class="form-group">
           <label>Filter Type</label>
           <select class="form-control" id="new-filter-type">
-            <option value="DestinationAddrFilter">DestinationAddrFilter (Phone Prefix / Regex)</option>
+            <option value="DestinationAddrFilter">DestinationAddrFilter (Recipient Phone / Regex)</option>
             <option value="SourceAddrFilter">SourceAddrFilter (Sender ID Regex)</option>
             <option value="ShortMessageFilter">ShortMessageFilter (Content / Keyword Regex)</option>
-            <option value="UserFilter">UserFilter (Match ESME User ID)</option>
+            <option value="UserFilter">UserFilter (Match User UID)</option>
+            <option value="GroupFilter">GroupFilter (Match Group GID)</option>
             <option value="TagFilter">TagFilter (Integer Metadata Tag)</option>
             <option value="TransparentFilter">TransparentFilter (Pass-through)</option>
           </select>
@@ -618,6 +698,16 @@
           <label id="label-filter-val">Expression / Regex Pattern</label>
           <input type="text" class="form-control" id="new-filter-val" placeholder="e.g. ^201[0-9]+">
         </div>
+
+        <!-- Live Regex Tester Sandbox -->
+        <div id="filter-regex-tester" style="background: var(--bg-card); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-color); margin-bottom: 1rem;">
+          <label style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.35rem; display: block;">Interactive Regex Validator</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="text" class="form-control" id="regex-test-sample" placeholder="Type sample input (e.g. +201012345678)...">
+            <span id="regex-test-badge" class="badge" style="align-self: center; white-space: nowrap;">Awaiting Input</span>
+          </div>
+        </div>
+
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
           <button type="submit" class="btn btn-primary">Create Filter</button>

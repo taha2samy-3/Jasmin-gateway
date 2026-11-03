@@ -314,20 +314,25 @@ monitoring:
 
 ## 9. Enterprise Web Management Dashboard (`gui/`)
 
-A high-performance Node.js (TypeScript) Web Management Console connecting directly to Jasmin Gateway on `127.0.0.1:8990` and `127.0.0.1:1401`.
+A high-performance, zero-auth Node.js (TypeScript) Web Management Console connecting directly to Jasmin Gateway on `127.0.0.1:8990`, `127.0.0.1:1401`, and RabbitMQ on `5672`.
 
-### Features:
-1. **NOC Cockpit (Overview):** Live real-time throughput chart (TPS), system status badges, and Twisted core telemetry.
-2. **User & Account Management:** Full CRUD for ESME clients, password generation, balance credits, and throughput limits.
-3. **HTTP Webhooks & Connectors:** Register and test HTTP webhooks for MO inbound SMS routing.
-4. **Routing Engine:** Manage MO and MT routing strategies (`DefaultRoute`, `StaticMORoute`).
-5. **SMS Dispatch Sandbox:** Send single/bulk test SMS through Jasmin HTTP API (`/send`) and view raw transaction responses.
-6. **Persistence Safeguard:** One-click **💾 Persist Config** button that triggers `persist` on Jasmin.
+### Core Capabilities:
+1. **Live AMQP Traffic & DLR Monitor:** Native AMQP 0-9-1 tap into exchange `messaging` (`submit.sm.*`, `submit.sm.resp.*`, `dlr_thrower.*`). Provides an in-memory ring buffer (up to 10,000 messages) with instant full-text search, status filtering (`SUBMITTED`, `ESME_ROK`, `DELIVRD`, `UNDELIV`), auto-scroll, and CSV export.
+2. **Deep PDU Inspector:** One-click inspection of decoded SMPP PDU payloads (Source/Dest TON/NPI, Data Coding, Priority, Route CID, SMSC Delivery Receipt, and round-trip latency).
+3. **Interactive jCLI Web Terminal (xterm.js):** Direct full-duplex interactive terminal in the browser connected via WebSocket to port `8990` with ANSI styling, autocomplete, and command history.
+4. **Interactive Route Match Simulator:** Test any combination of User UID, Sender ID, Recipient Phone, and Message Content against active filters and MT routes to visualize exact routing resolution.
+5. **Visual Filter Studio with Live Regex Testing:** Configure all 11 Jasmin filter types with an interactive real-time regex validator before saving.
+6. **Gateway State Snapshot & Portability:** One-click JSON backup/export of all users, groups, connectors, filters, and routes, with instant restore.
+7. **NOC Cockpit (Overview):** Live real-time throughput chart (TPS), system status badges, and Twisted core telemetry.
+8. **User & Account Management:** Full CRUD for ESME clients, password generation, balance credits, and throughput limits.
+9. **SMPP & HTTP Connectors:** Configure and monitor upstream carrier binds and HTTP webhooks.
+10. **Persistence Safeguard:** One-click **Save Config** button triggering `persist` on Jasmin.
 
 ### Running the Dashboard:
 ```bash
 cd gui
 npm install
+npm run build
 npm start # Starts web server on http://localhost:3000
 ```
 

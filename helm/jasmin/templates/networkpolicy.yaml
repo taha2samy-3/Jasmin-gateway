@@ -1,0 +1,74 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "jasmin.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jasmin.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "jasmin.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 1. SMPP Port (Carrier and Client Binds)
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.service.ports.smpp.targetPort }}
+      {{- with .Values.networkPolicy.smpp.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    # 2. HTTP API Port (REST Messaging)
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.service.ports.httpApi.targetPort }}
+      {{- with .Values.networkPolicy.httpApi.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- if .Values.dashboard.enabled }}
+    # 3. Dashboard Web Console Port
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.dashboard.port }}
+      {{- with .Values.networkPolicy.dashboard.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- if .Values.monitoring.enabled }}
+    # 4. Metrics Scrape Port
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.monitoring.serviceMonitor.targetPort | default 9090 }}
+      {{- with .Values.networkPolicy.metrics.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    # 5. jCLI Port (Restricted to Pod Localhost/Sidecar by default)
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.service.ports.jcli.targetPort }}
+      {{- if .Values.networkPolicy.jcli.from }}
+      from:
+        {{- toYaml .Values.networkPolicy.jcli.from | nindent 8 }}
+      {{- else }}
+      from:
+        - podSelector:
+            matchLabels:
+              {{- include "jasmin.selectorLabels" . | nindent 14 }}
+      {{- end }}
+  egress:
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- else }}
+    # Allow outbound traffic to DNS, RabbitMQ, Redis, and carrier SMSCs
+    - {}
+    {{- end }}
+{{- end }}
+

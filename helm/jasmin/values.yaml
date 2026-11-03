@@ -465,3 +465,36 @@ extraVolumeMounts: []
   # - name: custom-interceptors
   #   mountPath: /etc/jasmin/interceptors
   #   readOnly: true
+
+# =============================================================================
+# PodDisruptionBudget (PDB)
+# Guarantees that node draining, Kubernetes cluster upgrades, or auto-scaling events
+# never terminate the active Jasmin instance without replacement.
+# =============================================================================
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+  labels: {}
+  annotations: {}
+
+# =============================================================================
+# Hardened Telecom NetworkPolicy
+# Restricts administrative jCLI port 8990 strictly to localhost/sidecar,
+# limits SMPP ingress (2775) to trusted carrier/client CIDRs, and protects the HTTP API.
+# =============================================================================
+networkPolicy:
+  enabled: false
+  smpp:
+    from: []
+      # - ipBlock:
+      #     cidr: 10.0.0.0/8
+  httpApi:
+    from: []
+  dashboard:
+    from: []
+  metrics:
+    from: []
+  jcli:
+    from: []
+  egress: []

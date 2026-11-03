@@ -951,6 +951,85 @@
           }
         }
       }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "description": "PodDisruptionBudget configuration to safeguard active SMPP sessions during node draining",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "maxUnavailable": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "labels": {
+          "type": "object"
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "description": "Hardened Kubernetes NetworkPolicy for carrier-grade network isolation",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "smpp": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "array"
+            }
+          }
+        },
+        "httpApi": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "array"
+            }
+          }
+        },
+        "dashboard": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "array"
+            }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "array"
+            }
+          }
+        },
+        "jcli": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "array"
+            }
+          }
+        },
+        "egress": {
+          "type": "array"
+        }
+      }
     }
   }
 }
