@@ -316,13 +316,13 @@ config:
 jasminRoutes:
   enabled: false
   # HTTP Client Connectors (httpccm) for throwing incoming MO SMS to HTTP webhooks
-  httpConnectors:
+  httpConnectors: []
     # Example:
     # - cid: "webhook_01"
     #   url: "http://webhook-service.default.svc.cluster.local:8080/sms/incoming"
     #   method: "POST"
   # Inbound SMS MO Routes (morouter)
-  moRoutes:
+  moRoutes: []
     # Example:
     # - type: "DefaultRoute"
     #   connector: "http(webhook_01)"
@@ -330,7 +330,7 @@ jasminRoutes:
     #   order: 10
     #   connector: "http(webhook_01)"
   # Outbound SMS MT Routes (mtrouter)
-  mtRoutes:
+  mtRoutes: []
     # Example:
     # - type: "DefaultRoute"
     #   rate: "0.0"

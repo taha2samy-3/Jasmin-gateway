@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Jasmin SMS Gateway Values Schema",
+  "description": "JSON schema for Jasmin SMS Gateway Helm Chart values",
+  "type": "object",
+  "required": ["replicaCount", "image", "service", "credentials"],
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "description": "Number of Jasmin Gateway pod replicas (recommended: 1 for stateful SMPP/jCLI)",
+      "minimum": 1
+    },
+    "image": {
+      "type": "object",
+      "description": "Jasmin SMS Gateway container image configuration",
+      "required": ["repository"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "description": "Jasmin Gateway container image repository",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "description": "Container image tag"
+        },
+        "digest": {
+          "type": "string",
+          "description": "Container image digest (sha256:...)",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "description": "Kubernetes image pull policy",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "nameOverride": {
+      "type": "string",
+      "description": "Override the resource name prefix"
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "description": "Override the full resource name"
+    },
+    "serviceAccount": {
+      "type": "object",
+      "description": "ServiceAccount settings",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Specifies whether a ServiceAccount should be created"
+        },
+        "annotations": {
+          "type": "object",
+          "description": "Annotations to add to the ServiceAccount"
+        },
+        "name": {
+          "type": "string",
+          "description": "The name of the ServiceAccount to use"
+        }
+      }
+    },
+    "podAnnotations": {
+      "type": "object",
+      "description": "Annotations to add to the Jasmin pods"
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "description": "Security context applied at pod level",
+      "properties": {
+        "fsGroup": {
+          "type": "integer"
+        }
+      }
+    },
+    "securityContext": {
+      "type": "object",
+      "description": "Security context applied to the Jasmin container",
+      "properties": {
+        "allowPrivilegeEscalation": {
+          "type": "boolean"
+        },
+        "runAsNonRoot": {
+          "type": "boolean"
+        },
+        "runAsUser": {
+          "type": "integer"
+        },
+        "runAsGroup": {
+          "type": "integer"
+        },
+        "readOnlyRootFilesystem": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "drop": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "add": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "hostNetwork": {
+      "type": "boolean",
+      "description": "Bind pod directly to the host node network interface"
+    },
+    "service": {
+      "type": "object",
+      "description": "Kubernetes Service configuration for Jasmin Gateway",
+      "required": ["type", "ports"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Service type",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+        },
+        "externalTrafficPolicy": {
+          "type": "string",
+          "description": "External traffic policy (Local preserves client IP)",
+          "enum": ["Local", "Cluster"]
+        },
+        "loadBalancerIP": {
+          "type": "string",
+          "description": "Static IP for Cloud LoadBalancer"
+        },
+        "loadBalancerSourceRanges": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "CIDR ranges allowed to access the LoadBalancer"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "ports": {
+          "type": "object",
+          "required": ["smpp", "httpApi", "jcli", "interceptor"],
+          "properties": {
+            "smpp": {
+              "type": "object",
+              "required": ["port", "targetPort"],
+              "properties": {
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
+                "name": { "type": "string" },
+                "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+              }
+            },
+            "httpApi": {
+              "type": "object",
+              "required": ["port", "targetPort"],
+              "properties": {
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
+                "name": { "type": "string" },
+                "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+              }
+            },
+            "jcli": {
+              "type": "object",
+              "required": ["port", "targetPort"],
+              "properties": {
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
+                "name": { "type": "string" },
+                "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+              }
+            },
+            "interceptor": {
+              "type": "object",
+              "required": ["port", "targetPort"],
+              "properties": {
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
+                "name": { "type": "string" },
+                "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "description": "Jasmin Enterprise Web Dashboard sidecar configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable Web Management Dashboard sidecar"
+        },
+        "image": {
+          "type": "object",
+          "required": ["repository"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string" },
+            "digest": { "type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$" },
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "port": {
+          "type": "integer",
+          "description": "Dashboard container port",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "nodePort": {
+          "type": "integer",
+          "minimum": 30000,
+          "maximum": 32767
+        },
+        "resources": {
+          "type": "object"
+        },
+        "securityContext": {
+          "type": "object"
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "description": "Kubernetes Ingress configuration",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "type": "object" },
+        "hosts": { "type": "array" },
+        "tls": { "type": "array" }
+      }
+    },
+    "httpRoute": {
+      "type": "object",
+      "description": "Kubernetes Gateway API HTTPRoute (gateway.networking.k8s.io/v1)",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "annotations": { "type": "object" },
+        "parentRefs": { "type": "array" },
+        "hostnames": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "endpoints": { "type": "object" },
+        "rules": { "type": "array" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "description": "Persistent volume claim configuration for Jasmin state and logs",
+      "required": ["enabled", "size"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "storageClass": { "type": "string" },
+        "accessMode": {
+          "type": "string",
+          "enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany"]
+        },
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+(Gi|Mi|Ti)$"
+        },
+        "annotations": { "type": "object" }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "description": "Authentication credentials for Jasmin daemons and dependent services",
+      "required": ["jcli", "rabbitmq", "redis"],
+      "properties": {
+        "jcli": {
+          "type": "object",
+          "required": ["username"],
+          "properties": {
+            "username": { "type": "string", "minLength": 1 },
+            "password": { "type": "string" },
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" }
+          }
+        },
+        "rabbitmq": {
+          "type": "object",
+          "required": ["username"],
+          "properties": {
+            "username": { "type": "string", "minLength": 1 },
+            "password": { "type": "string" },
+            "vhost": { "type": "string" },
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" }
+          }
+        },
+        "redis": {
+          "type": "object",
+          "properties": {
+            "password": { "type": "string" },
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" }
+          }
+        }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "externalRedis": {
+      "type": "object",
+      "required": ["host", "port"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "rabbitmq": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "externalRabbitMQ": {
+      "type": "object",
+      "required": ["host", "port"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "config": {
+      "type": "object",
+      "description": "Direct INI configurations for Jasmin and interceptor daemons",
+      "properties": {
+        "logLevel": {
+          "type": "string",
+          "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        },
+        "logPrivacy": { "type": "boolean" },
+        "smppServer": { "type": "object" },
+        "smppServerPb": { "type": "object" },
+        "clientManagement": { "type": "object" },
+        "router": { "type": "object" },
+        "httpApi": { "type": "object" },
+        "jcli": { "type": "object" },
+        "redisClient": { "type": "object" },
+        "amqpBroker": { "type": "object" },
+        "interceptorClient": { "type": "object" },
+        "dlr": { "type": "object" },
+        "deliversmThrower": { "type": "object" },
+        "interceptorPb": { "type": "object" },
+        "extraConfig": { "type": "string" },
+        "customJasminCfg": { "type": "string" },
+        "customInterceptorCfg": { "type": "string" }
+      }
+    },
+    "jasminRoutes": {
+      "type": "object",
+      "description": "Pre-provisioned internal Jasmin routes and HTTP connectors",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "httpConnectors": { "type": ["array", "null"] },
+        "moRoutes": { "type": ["array", "null"] },
+        "mtRoutes": { "type": ["array", "null"] }
+      }
+    },
+    "interceptor": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "embedded": { "type": "boolean" }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "interval": { "type": "string" },
+            "path": { "type": "string" },
+            "labels": { "type": "object" }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "description": "Pod resource requests and limits"
+    },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "extraEnv": { "type": "array" },
+    "extraEnvFrom": { "type": "array" },
+    "extraVolumes": { "type": "array" },
+    "extraVolumeMounts": { "type": "array" }
+  }
+}
