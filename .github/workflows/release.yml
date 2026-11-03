@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release, e.g. v0.1.0'
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  image:
+    name: Build & Attest Image
+    needs: [tests]
+    uses: ./.github/workflows/build-image.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      version: ${{ inputs.tag || github.ref_name }}
+
+  chart:
+    name: Build & Attest Chart
+    needs: [image]
+    uses: ./.github/workflows/build-chart.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      version: ${{ inputs.tag || github.ref_name }}
+      image-digest: ${{ needs.image.outputs.digest }}
+    secrets:
+      ARTIFACTHUB_API_KEY_ID: ${{ secrets.ARTIFACTHUB_API_KEY_ID }}
+      ARTIFACTHUB_API_KEY_SECRET: ${{ secrets.ARTIFACTHUB_API_KEY_SECRET }}
+
+  github-release:
+    name: GitHub Release
+    needs: [image, chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: chart
+          path: dist
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+          CHART: ${{ needs.chart.outputs.chart }}
+          CHART_DIGEST: ${{ needs.chart.outputs.digest }}
+        run: |
+          version="${TAG#v}"
+          cat > notes.md <<EOF
+          # Jasmin SMS Gateway Release ${TAG}
+
+          ## Helm Installation
+
+          \`\`\`sh
+          helm install jasmin oci://${CHART} --version ${version} --namespace jasmin --create-namespace
+          \`\`\`
+
+          ## Artifacts & References
+
+          | Artifact | Reference |
+          |---|---|
+          | **Dashboard Image** | \`${IMAGE}:${version}@${IMAGE_DIGEST}\` |
+          | **Helm Chart** | \`${CHART}:${version}@${CHART_DIGEST}\` |
+
+          ## Security & Supply Chain Verification (SLSA Level 3)
+
+          Verify cryptographic provenance and Sigstore signatures directly with GitHub CLI:
+
+          \`\`\`sh
+          # Verify container image provenance (SLSA Build Level 3)
+          gh attestation verify oci://${IMAGE}:${version} --owner ${GITHUB_REPOSITORY_OWNER} \\
+            --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/build-image.yml
+
+          # Verify Helm chart provenance (SLSA Build Level 3)
+          gh attestation verify oci://${CHART}:${version} --owner ${GITHUB_REPOSITORY_OWNER} \\
+            --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/build-chart.yml
+
+          # Verify Cosign keyless signatures
+          cosign verify ${IMAGE}:${version} --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify ${CHART}:${version} --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          \`\`\`
+          EOF
+
+          prerelease=()
+          [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$TAG" dist/*.tgz --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" --notes-file notes.md --generate-notes --verify-tag "${prerelease[@]}"
