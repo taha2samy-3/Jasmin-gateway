@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  lint:
-    name: Lint & Typecheck
+  lint-and-test:
+    name: Lint, Test & Validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,11 +30,20 @@ jobs:
           cache: 'npm'
           cache-dependency-path: gui/package-lock.json
 
-      - name: Install dependencies & Build GUI
+      - name: Install dependencies, build & test GUI
         run: |
           cd gui
           npm ci
           npm run build
+          npm test
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Jasmin Python unit tests
+        run: |
+          PYTHONPATH=docker python3 -m unittest discover -s docker -p 'test_*.py'
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
@@ -44,11 +53,21 @@ jobs:
           helm lint --strict helm/jasmin --set dashboard.enabled=false
 
   image:
-    name: Image build + scan
+    name: Image build + scan (${{ matrix.name }})
     runs-on: ubuntu-latest
-    needs: [lint]
+    needs: [lint-and-test]
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: jasmin
+            context: docker
+            tag: jasmin:ci
+          - name: jasmin-gui
+            context: gui
+            tag: jasmin-gui:ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,7 +79,7 @@ jobs:
       - name: Build multi-arch image (AMD64 & ARM64)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: gui
+          context: ${{ matrix.context }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -68,15 +87,15 @@ jobs:
       - name: Load local amd64 image for vulnerability scan
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: gui
+          context: ${{ matrix.context }}
           load: true
-          tags: jasmin-gui:ci
+          tags: ${{ matrix.tag }}
           cache-from: type=gha
 
       - name: Vulnerability scan
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
-          image: jasmin-gui:ci
+          image: ${{ matrix.tag }}
           fail-build: false
           severity-cutoff: high
           output-format: table

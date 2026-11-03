@@ -3,8 +3,9 @@
 replicaCount: 1
 
 image:
-  repository: jasmin
+  repository: ghcr.io/taha2samy-3/jasmin
   tag: "0.11.1"
+  digest: ""
   pullPolicy: IfNotPresent
 
 nameOverride: ""

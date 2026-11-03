@@ -1,5 +1,6 @@
-# Trusted builder for container image (SLSA Build Level 3)
-# Builds multi-arch linux/amd64 and linux/arm64, signs with Cosign, generates and attests SBOM & SLSA provenance.
+# Trusted builder for container images (SLSA Build Level 3)
+# Builds multi-arch linux/amd64 and linux/arm64 for Jasmin Gateway and Jasmin GUI,
+# signs with Cosign, generates and attests SBOM & SLSA provenance.
 name: Build image (reusable)
 
 on:
@@ -11,17 +12,119 @@ on:
         type: string
     outputs:
       image:
-        description: Image repository
-        value: ${{ jobs.build.outputs.image }}
+        description: Image repository (Dashboard / GUI)
+        value: ${{ jobs.build-gui.outputs.image }}
       digest:
-        description: Image index digest
-        value: ${{ jobs.build.outputs.digest }}
+        description: Image index digest (Dashboard / GUI)
+        value: ${{ jobs.build-gui.outputs.digest }}
+      gui-image:
+        description: Image repository (Dashboard / GUI)
+        value: ${{ jobs.build-gui.outputs.image }}
+      gui-digest:
+        description: Image index digest (Dashboard / GUI)
+        value: ${{ jobs.build-gui.outputs.digest }}
+      jasmin-image:
+        description: Image repository (Jasmin Gateway)
+        value: ${{ jobs.build-jasmin.outputs.image }}
+      jasmin-digest:
+        description: Image index digest (Jasmin Gateway)
+        value: ${{ jobs.build-jasmin.outputs.digest }}
 
 permissions: {}
 
 jobs:
-  build:
-    name: Build Multi-Arch Image
+  build-jasmin:
+    name: Build Jasmin Gateway (Multi-Arch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.version }}
+          persist-credentials: false
+
+      - name: Validate version & configure image name
+        id: vars
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::invalid version $VERSION"; exit 1; }
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+            type=raw,value=latest,enable=${{ !contains(inputs.version, '-') }}
+          labels: |
+            org.opencontainers.image.title=jasmin
+            org.opencontainers.image.description=Production Jasmin SMS Gateway on Wolfi Linux
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build and push multi-arch image (AMD64 & ARM64)
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+
+      - name: Attest build provenance (SLSA Build Level 3)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.vars.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ steps.vars.outputs.image }}@${{ steps.push.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-jasmin.cdx.json
+          upload-artifact: false
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ steps.vars.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom-jasmin.cdx.json
+          push-to-registry: true
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign image (Cosign keyless)
+        env:
+          REF: ${{ steps.vars.outputs.image }}@${{ steps.push.outputs.digest }}
+        run: cosign sign --yes --recursive "$REF"
+
+  build-gui:
+    name: Build Jasmin GUI (Multi-Arch)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,7 +167,7 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(inputs.version, '-') }}
           labels: |
             org.opencontainers.image.title=jasmin-gui
-            org.opencontainers.image.description=Enterprise Web Dashboard for Jasmin SMS Gateway
+            org.opencontainers.image.description=Enterprise Web Dashboard for Jasmin SMS Gateway on Wolfi Linux
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
@@ -92,7 +195,7 @@ jobs:
         with:
           image: ${{ steps.vars.outputs.image }}@${{ steps.push.outputs.digest }}
           format: cyclonedx-json
-          output-file: sbom.cdx.json
+          output-file: sbom-gui.cdx.json
           upload-artifact: false
 
       - name: Attest SBOM
@@ -100,7 +203,7 @@ jobs:
         with:
           subject-name: ${{ steps.vars.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
-          sbom-path: sbom.cdx.json
+          sbom-path: sbom-gui.cdx.json
           push-to-registry: true
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2

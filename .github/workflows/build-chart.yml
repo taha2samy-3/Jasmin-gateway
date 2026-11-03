@@ -1,5 +1,5 @@
 # Trusted builder for the Helm chart (SLSA Build Level 3)
-# Packages the chart, pins the image digest, publishes to GHCR OCI, signs with Cosign,
+# Packages the chart, pins the image digests, publishes to GHCR OCI, signs with Cosign,
 # registers the repository on Artifact Hub and pushes metadata layer via ORAS.
 name: Build chart (reusable)
 
@@ -10,8 +10,12 @@ on:
         description: Release tag, e.g. v0.1.0
         required: true
         type: string
+      jasmin-digest:
+        description: Digest of the Jasmin Gateway image built for this release
+        required: true
+        type: string
       image-digest:
-        description: Digest of the image built for this release
+        description: Digest of the GUI dashboard image built for this release
         required: true
         type: string
     secrets:
@@ -60,30 +64,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set chart version, image digest and ArtifactHub metadata
+      - name: Set chart version, image digests and ArtifactHub metadata
         env:
           TAG: ${{ inputs.version }}
-          DIGEST: ${{ inputs.image-digest }}
+          JASMIN_DIGEST: ${{ inputs.jasmin-digest }}
+          GUI_DIGEST: ${{ inputs.image-digest }}
         run: |
-          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::invalid digest $DIGEST"; exit 1; }
+          [[ "$JASMIN_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::invalid jasmin digest $JASMIN_DIGEST"; exit 1; }
+          [[ "$GUI_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::invalid gui digest $GUI_DIGEST"; exit 1; }
           version="${TAG#v}"
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-gui"
+          jasmin_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin"
+          gui_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-gui"
           prev="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
 
           changes="$(git log --format='%s' ${prev:+"$prev..$TAG"} -- . ':!.github' | head -30 |
             sed -E 's/"/\\"/g; s/^(.*)$/- kind: changed\n  description: "\1"/')"
           [[ -n "$changes" ]] || changes=$'- kind: changed\n  description: "Release Jasmin SMS Gateway Helm chart"'
 
-          export version image changes
+          export version jasmin_image gui_image changes
           yq -i '
             .version = strenv(version) |
-            .annotations["artifacthub.io/images"] = "- name: jasmin-gui\n  image: " + strenv(image) + ":" + strenv(version) + "\n  platforms:\n    - linux/amd64\n    - linux/arm64\n" |
+            .annotations["artifacthub.io/images"] = "- name: jasmin\n  image: " + strenv(jasmin_image) + ":" + strenv(version) + "\n  platforms:\n    - linux/amd64\n    - linux/arm64\n- name: jasmin-gui\n  image: " + strenv(gui_image) + ":" + strenv(version) + "\n  platforms:\n    - linux/amd64\n    - linux/arm64\n" |
             .annotations["artifacthub.io/changes"] = strenv(changes) + "\n" |
             .annotations["artifacthub.io/prerelease"] = (strenv(version) | test("-") | tostring)
           ' "$CHART_DIR/Chart.yaml"
 
-          # Pin the exact image digest built for this release in values.yaml
-          yq -i '.dashboard.image.digest = strenv(DIGEST) | .dashboard.image.tag = strenv(version)' "$CHART_DIR/values.yaml"
+          # Pin the exact image digests built for this release in values.yaml
+          yq -i '
+            .image.repository = strenv(jasmin_image) |
+            .image.digest = strenv(JASMIN_DIGEST) |
+            .image.tag = strenv(version) |
+            .dashboard.image.repository = strenv(gui_image) |
+            .dashboard.image.digest = strenv(GUI_DIGEST) |
+            .dashboard.image.tag = strenv(version)
+          ' "$CHART_DIR/values.yaml"
           cat "$CHART_DIR/Chart.yaml"
 
       - name: Lint and package Helm chart

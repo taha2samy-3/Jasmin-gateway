@@ -23,7 +23,7 @@ jobs:
       contents: read
 
   image:
-    name: Build & Attest Image
+    name: Build & Attest Images
     needs: [tests]
     uses: ./.github/workflows/build-image.yml
     permissions:
@@ -45,7 +45,8 @@ jobs:
       attestations: write
     with:
       version: ${{ inputs.tag || github.ref_name }}
-      image-digest: ${{ needs.image.outputs.digest }}
+      jasmin-digest: ${{ needs.image.outputs.jasmin-digest }}
+      image-digest: ${{ needs.image.outputs.gui-digest }}
     secrets:
       ARTIFACTHUB_API_KEY_ID: ${{ secrets.ARTIFACTHUB_API_KEY_ID }}
       ARTIFACTHUB_API_KEY_SECRET: ${{ secrets.ARTIFACTHUB_API_KEY_SECRET }}
@@ -66,8 +67,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
-          IMAGE: ${{ needs.image.outputs.image }}
-          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+          JASMIN_IMAGE: ${{ needs.image.outputs.jasmin-image }}
+          JASMIN_DIGEST: ${{ needs.image.outputs.jasmin-digest }}
+          GUI_IMAGE: ${{ needs.image.outputs.gui-image }}
+          GUI_DIGEST: ${{ needs.image.outputs.gui-digest }}
           CHART: ${{ needs.chart.outputs.chart }}
           CHART_DIGEST: ${{ needs.chart.outputs.digest }}
         run: |
@@ -85,7 +88,8 @@ jobs:
 
           | Artifact | Reference |
           |---|---|
-          | **Dashboard Image** | \`${IMAGE}:${version}@${IMAGE_DIGEST}\` |
+          | **Jasmin Gateway Image** | \`${JASMIN_IMAGE}:${version}@${JASMIN_DIGEST}\` |
+          | **Dashboard GUI Image** | \`${GUI_IMAGE}:${version}@${GUI_DIGEST}\` |
           | **Helm Chart** | \`${CHART}:${version}@${CHART_DIGEST}\` |
 
           ## Security & Supply Chain Verification (SLSA Level 3)
@@ -93,8 +97,11 @@ jobs:
           Verify cryptographic provenance and Sigstore signatures directly with GitHub CLI:
 
           \`\`\`sh
-          # Verify container image provenance (SLSA Build Level 3)
-          gh attestation verify oci://${IMAGE}:${version} --owner ${GITHUB_REPOSITORY_OWNER} \\
+          # Verify container images provenance (SLSA Build Level 3)
+          gh attestation verify oci://${JASMIN_IMAGE}:${version} --owner ${GITHUB_REPOSITORY_OWNER} \\
+            --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/build-image.yml
+
+          gh attestation verify oci://${GUI_IMAGE}:${version} --owner ${GITHUB_REPOSITORY_OWNER} \\
             --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/build-image.yml
 
           # Verify Helm chart provenance (SLSA Build Level 3)
@@ -102,7 +109,8 @@ jobs:
             --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/build-chart.yml
 
           # Verify Cosign keyless signatures
-          cosign verify ${IMAGE}:${version} --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify ${JASMIN_IMAGE}:${version} --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          cosign verify ${GUI_IMAGE}:${version} --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           cosign verify ${CHART}:${version} --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           \`\`\`
           EOF
