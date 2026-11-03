@@ -51,5 +51,14 @@ spec:
       {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.ports.interceptor.nodePort }}
       nodePort: {{ .Values.service.ports.interceptor.nodePort }}
       {{- end }}
+    {{- if .Values.dashboard.enabled }}
+    - name: dashboard
+      port: {{ .Values.dashboard.port }}
+      targetPort: {{ .Values.dashboard.port }}
+      protocol: TCP
+      {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.dashboard.nodePort }}
+      nodePort: {{ .Values.dashboard.nodePort }}
+      {{- end }}
+    {{- end }}
   selector:
     {{- include "jasmin.selectorLabels" . | nindent 4 }}

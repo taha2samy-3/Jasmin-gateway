@@ -1,0 +1,12 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Geometric 5-Petal Jasmine Star Aperture -->
+  <g transform="translate(18, 18)">
+    <path d="M0 -15C2.2 -8 5.2 -5 12 -2C5 1 2 4 0 11C-2 4 -5 1 -12 -2C-5.2 -5 -2.2 -8 0 -15Z" fill="#FFFFFF"/>
+    <path d="M0 -15C2.2 -8 5.2 -5 12 -2C5 1 2 4 0 11C-2 4 -5 1 -12 -2C-5.2 -5 -2.2 -8 0 -15Z" fill="#FFFFFF" transform="rotate(72)"/>
+    <path d="M0 -15C2.2 -8 5.2 -5 12 -2C5 1 2 4 0 11C-2 4 -5 1 -12 -2C-5.2 -5 -2.2 -8 0 -15Z" fill="#FFFFFF" transform="rotate(144)"/>
+    <path d="M0 -15C2.2 -8 5.2 -5 12 -2C5 1 2 4 0 11C-2 4 -5 1 -12 -2C-5.2 -5 -2.2 -8 0 -15Z" fill="#FFFFFF" transform="rotate(216)"/>
+    <path d="M0 -15C2.2 -8 5.2 -5 12 -2C5 1 2 4 0 11C-2 4 -5 1 -12 -2C-5.2 -5 -2.2 -8 0 -15Z" fill="#FFFFFF" transform="rotate(288)"/>
+    <circle cx="0" cy="0" r="3.6" fill="#09090B"/>
+    <circle cx="0" cy="0" r="1.6" fill="#FFFFFF"/>
+  </g>
+</svg>

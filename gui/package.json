@@ -1,10 +1,12 @@
 {
   "name": "jasmin-enterprise-gui",
   "version": "1.0.0",
+  "type": "module",
   "description": "Enterprise Web Management Dashboard for Jasmin SMS Gateway",
-  "main": "src/server.js",
+  "main": "dist/server.js",
   "scripts": {
-    "start": "tsx src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts"
   },
   "dependencies": {

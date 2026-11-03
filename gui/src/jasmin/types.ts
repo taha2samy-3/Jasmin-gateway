@@ -69,3 +69,17 @@ export interface JasminSmppsApiStats {
   throttlingErrorCount: number;
   otherSubmitErrorCount: number;
 }
+
+export interface JasminFilter {
+  fid: string;
+  type: string;
+  routes: string;
+  description: string;
+}
+
+export interface JasminInterceptor {
+  order: number;
+  type: string;
+  script: string;
+  filters: string[];
+}

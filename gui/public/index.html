@@ -11,22 +11,27 @@
   <!-- Header -->
   <header>
     <div class="brand">
-      <div class="logo-badge">JASMIN</div>
-      <div>
-        <div class="brand-title">Enterprise SMS Gateway Console</div>
-        <div class="brand-subtitle">High-Performance Twisted Telco Core</div>
+      <div class="brand-logo-container">
+        <img src="/assets/logo.svg" alt="Jasmin Logo" width="34" height="34">
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">
+          JASMIN
+          <span class="brand-badge">ENTERPRISE</span>
+        </div>
+        <div class="brand-subtitle">High-Throughput SMS Gateway</div>
       </div>
     </div>
     <div class="system-status">
-      <div class="badge badge-success">
-        <span class="badge-pulse"></span>
-        <span id="gateway-status">ONLINE (v0.11.1)</span>
+      <div class="badge">
+        <span class="badge-dot"></span>
+        <span id="gateway-status">LIVE (v0.11.1)</span>
       </div>
-      <div class="badge" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4)">
+      <div class="badge" style="font-family: var(--font-mono);">
         jCLI: 127.0.0.1:8990
       </div>
       <button class="btn btn-outline" id="btn-persist" title="Save in-memory state to disk store">
-        💾 Persist Config
+        Save Config
       </button>
     </div>
   </header>
@@ -38,6 +43,7 @@
     <button class="tab-btn" data-tab="connectors">Connectors (HTTP & SMPP)</button>
     <button class="tab-btn" data-tab="routes">Routing Engine (MO/MT)</button>
     <button class="tab-btn" data-tab="sms-tester">SMS Sandbox</button>
+    <button class="tab-btn" data-tab="config">Configuration (jasmin.cfg)</button>
   </nav>
 
   <!-- Main Content -->
@@ -69,13 +75,49 @@
       </div>
 
       <!-- Real-time Traffic Chart -->
-      <div class="card" style="margin-bottom: 2rem;">
+      <div class="card" style="margin-bottom: 1.5rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-          <div class="card-title" style="margin: 0;">Live Throughput & Telemetry (Requests / Sec)</div>
-          <span style="font-size: 0.8rem; color: #10b981;">● Live WebSocket Feed</span>
+          <div class="card-title" style="margin: 0;">Traffic Velocity & Subsystem Telemetry (Requests / Sec)</div>
+          <span style="font-size: 0.8rem; color: #ffffff;">● Live WebSocket Telemetry Feed</span>
         </div>
-        <div style="height: 240px;">
+        <div style="height: 220px;">
           <canvas id="trafficChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Subsystem Telemetry & Analytics Grid (3 Specialized Charts) -->
+      <div class="charts-grid-3">
+        <!-- 1. Status & Error Distribution -->
+        <div class="chart-card">
+          <div class="chart-card-header">
+            <h4>Delivery & Status Ratio</h4>
+            <span class="badge badge-outline" id="badge-total-events">Live Events</span>
+          </div>
+          <div class="chart-container">
+            <canvas id="statusChart"></canvas>
+          </div>
+        </div>
+
+        <!-- 2. SMPP Protocol Binds Breakdown -->
+        <div class="chart-card">
+          <div class="chart-card-header">
+            <h4>SMPP Protocol Sessions</h4>
+            <span class="badge badge-outline">Port 2775</span>
+          </div>
+          <div class="chart-container">
+            <canvas id="smppBindsChart"></canvas>
+          </div>
+        </div>
+
+        <!-- 3. Tenant Credit Liquidity -->
+        <div class="chart-card">
+          <div class="chart-card-header">
+            <h4>Account Credit Liquidity</h4>
+            <span class="badge badge-outline">Balance ($)</span>
+          </div>
+          <div class="chart-container">
+            <canvas id="liquidityChart"></canvas>
+          </div>
         </div>
       </div>
 
@@ -137,6 +179,36 @@
 
     <!-- 3. CONNECTORS TAB -->
     <div class="tab-pane" id="tab-connectors">
+      <!-- Upstream SMPP Connectors -->
+      <div class="card" style="margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+          <div>
+            <h2 style="font-size: 1.25rem;">Upstream SMPP Client Connectors (SMSC)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Bidirectional connections to mobile carriers and SMS gateways (SMPP v3.4).</p>
+          </div>
+          <button class="btn btn-primary" id="btn-open-add-smpp-connector">+ Add SMPP Connector</button>
+        </div>
+
+        <div class="table-container">
+          <table id="table-smpp-connectors">
+            <thead>
+              <tr>
+                <th>Connector ID</th>
+                <th>Service Status</th>
+                <th>Session State</th>
+                <th>Starts</th>
+                <th>Stops</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Populated dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- HTTP Client Connectors -->
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
           <div>
@@ -154,7 +226,7 @@
                 <th>Type</th>
                 <th>Method</th>
                 <th>Target Webhook URL</th>
-                <th>Status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -167,7 +239,37 @@
 
     <!-- 4. ROUTES TAB -->
     <div class="tab-pane" id="tab-routes">
-      <div class="card">
+      <!-- MT Routing Table -->
+      <div class="card" style="margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+          <div>
+            <h2 style="font-size: 1.25rem;">Outbound SMS Routing Engine (MT Router)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Route outgoing SMS to upstream SMPP connectors with per-message billing rates.</p>
+          </div>
+          <button class="btn btn-primary" id="btn-open-add-mt-route">+ Add MT Route</button>
+        </div>
+
+        <div class="table-container">
+          <table id="table-mt-routes">
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Strategy Type</th>
+                <th>Billing Rate (Credits)</th>
+                <th>Target Upstream Connector</th>
+                <th>Filters</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Populated dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- MO Routing Table -->
+      <div class="card" style="margin-bottom: 2rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
           <div>
             <h2 style="font-size: 1.25rem;">Inbound SMS Routing Engine (MO Router)</h2>
@@ -193,6 +295,61 @@
           </table>
         </div>
       </div>
+
+      <!-- Traffic Routing Filters Table (filtersm) -->
+      <div class="card" style="margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+          <div>
+            <h2 style="font-size: 1.25rem;">Traffic Policy Filters (filtersm)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Regex rules for destination phone prefixes, sender IDs, content inspection, and user quotas.</p>
+          </div>
+          <button class="btn btn-primary" id="btn-open-add-filter">+ Add Filter</button>
+        </div>
+
+        <div class="table-container">
+          <table id="table-filters">
+            <thead>
+              <tr>
+                <th>Filter ID</th>
+                <th>Filter Type</th>
+                <th>Scope</th>
+                <th>Pattern / Expression</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Populated dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Message Interceptors Table (interceptorm) -->
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+          <div>
+            <h2 style="font-size: 1.25rem;">Python Message Interceptors (interceptorm)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Scriptable Python interception rules for dynamic content transformation, billing enrichment, and security.</p>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table id="table-interceptors">
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Direction</th>
+                <th>Strategy Type</th>
+                <th>Script Handler</th>
+                <th>Filters</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Populated dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <!-- 5. SMS TESTER TAB -->
@@ -205,23 +362,23 @@
           <form id="form-sms-send">
             <div class="form-group">
               <label>Client Username</label>
-              <input type="text" class="form-control" id="sms-user" value="client1" required>
+              <input type="text" class="form-control" id="sms-user" placeholder="Enter ESME username" required>
             </div>
             <div class="form-group">
               <label>Password</label>
-              <input type="password" class="form-control" id="sms-pass" value="pass123" required>
+              <input type="password" class="form-control" id="sms-pass" placeholder="Enter ESME password" required>
             </div>
             <div class="form-group">
               <label>Recipient Phone Number (To)</label>
-              <input type="text" class="form-control" id="sms-to" placeholder="+201012345678" value="+201000000000" required>
+              <input type="text" class="form-control" id="sms-to" placeholder="e.g. +201012345678" required>
             </div>
             <div class="form-group">
               <label>Sender ID (From)</label>
-              <input type="text" class="form-control" id="sms-from" value="JASMIN_TEST">
+              <input type="text" class="form-control" id="sms-from" placeholder="Optional sender ID (e.g. GATEWAY)">
             </div>
             <div class="form-group">
               <label>Message Content</label>
-              <textarea class="form-control" id="sms-content" rows="3" required>Hello from Jasmin Enterprise Web Dashboard!</textarea>
+              <textarea class="form-control" id="sms-content" rows="3" placeholder="Type SMS content to dispatch..." required></textarea>
             </div>
             <button type="submit" class="btn btn-success" style="width: 100%;">🚀 Dispatch SMS</button>
           </form>
@@ -230,8 +387,64 @@
         <div class="card">
           <h2 style="font-size: 1.25rem; margin-bottom: 0.5rem;">API Dispatch Response</h2>
           <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">Live response from Jasmin HTTP `/send` endpoint.</p>
-          <pre id="sms-response-log" style="background: var(--bg-secondary); padding: 1.25rem; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; min-height: 200px; color: #10b981; border: 1px solid var(--border-color); overflow-x: auto;">Awaiting SMS submission...</pre>
+          <pre id="sms-response-log" style="background: var(--bg-canvas); padding: 1.25rem; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.85rem; min-height: 200px; color: var(--accent-white); border: 1px solid var(--border-subtle); overflow-x: auto;">Awaiting SMS submission...</pre>
         </div>
+      </div>
+    </div>
+
+    <!-- 6. CONFIGURATION TAB -->
+    <div class="tab-pane" id="tab-config">
+      <!-- Sidecar Pod Architecture Banner -->
+      <div class="config-banner">
+        <div>
+          <div style="font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem;">
+            <span>❖</span> Kubernetes Pod Sidecar Architecture
+          </div>
+          <div style="color: var(--text-muted); font-size: 0.82rem;">
+            Jasmin SMS Gateway and Enterprise GUI run as separate containers in the same Pod, sharing the <code>localhost</code> network namespace and reading <code>/etc/jasmin/jasmin.cfg</code>.
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <span class="badge badge-success">Shared Net: localhost</span>
+          <span class="badge badge-outline" id="config-file-path">/etc/jasmin/jasmin.cfg</span>
+        </div>
+      </div>
+
+      <!-- Config Summary Cards -->
+      <div class="metrics-grid">
+        <div class="card">
+          <div class="card-title">jCLI Socket</div>
+          <div class="card-value" style="font-size: 1.35rem;" id="cfg-jcli-socket">127.0.0.1:8990</div>
+          <div class="card-subtext" id="cfg-jcli-user">Admin: jcliadmin (MD5 Auth)</div>
+        </div>
+        <div class="card">
+          <div class="card-title">HTTP API Listener</div>
+          <div class="card-value" style="font-size: 1.35rem;" id="cfg-http-socket">0.0.0.0:1401</div>
+          <div class="card-subtext">Rest API (/send, /balance, /rate)</div>
+        </div>
+        <div class="card">
+          <div class="card-title">SMPP Server Listener</div>
+          <div class="card-value" style="font-size: 1.35rem;" id="cfg-smpp-socket">0.0.0.0:2775</div>
+          <div class="card-subtext" id="cfg-smpp-billing">Billing Feature: Enabled</div>
+        </div>
+        <div class="card">
+          <div class="card-title">State Persistence</div>
+          <div class="card-value" style="font-size: 1.35rem;" id="cfg-store-dir">/etc/jasmin/store</div>
+          <div class="card-subtext">Persistence Engine: JFC Store</div>
+        </div>
+      </div>
+
+      <!-- Syntax-Highlighted Raw Config Viewer -->
+      <div class="config-code-container">
+        <div class="config-code-header">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span>⚙</span> Active INI Configuration: <strong id="cfg-header-path">/etc/jasmin/jasmin.cfg</strong>
+          </div>
+          <button class="btn btn-outline" style="padding: 0.25rem 0.65rem; font-size: 0.75rem;" onclick="copyConfig()">
+            Copy Config
+          </button>
+        </div>
+        <pre class="config-code-pre" id="config-raw-view">Loading configuration from shared pod volume...</pre>
       </div>
     </div>
 
@@ -247,23 +460,23 @@
       <form id="form-add-user">
         <div class="form-group">
           <label>User ID (UID)</label>
-          <input type="text" class="form-control" id="new-user-uid" required placeholder="e.g. client_02">
+          <input type="text" class="form-control" id="new-user-uid" required placeholder="e.g. client_01">
         </div>
         <div class="form-group">
           <label>Group ID (GID)</label>
-          <input type="text" class="form-control" id="new-user-gid" required value="customer_group">
+          <input type="text" class="form-control" id="new-user-gid" required placeholder="e.g. default_group">
         </div>
         <div class="form-group">
           <label>Username</label>
-          <input type="text" class="form-control" id="new-user-username" required placeholder="client_user">
+          <input type="text" class="form-control" id="new-user-username" required placeholder="Enter username">
         </div>
         <div class="form-group">
           <label>Password</label>
-          <input type="password" class="form-control" id="new-user-password" required placeholder="Secret123!">
+          <input type="password" class="form-control" id="new-user-password" required placeholder="Enter password">
         </div>
         <div class="form-group">
           <label>Initial Balance (Credits)</label>
-          <input type="number" class="form-control" id="new-user-balance" value="100.0" step="1">
+          <input type="number" class="form-control" id="new-user-balance" value="0.0" step="0.1">
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
@@ -299,6 +512,114 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
           <button type="submit" class="btn btn-primary">Create Connector</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD SMPP CONNECTOR -->
+  <div class="modal-overlay" id="modal-add-smpp-connector">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Create SMPP Client Connector</h3>
+        <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
+      </div>
+      <form id="form-add-smpp-connector">
+        <div class="form-group">
+          <label>Connector ID (CID)</label>
+          <input type="text" class="form-control" id="new-smpp-cid" required placeholder="e.g. smpp_carrier_01">
+        </div>
+        <div class="form-group">
+          <label>Remote Host / IP</label>
+          <input type="text" class="form-control" id="new-smpp-host" required placeholder="127.0.0.1 or smpp.carrier.com">
+        </div>
+        <div class="form-group">
+          <label>Port</label>
+          <input type="number" class="form-control" id="new-smpp-port" value="2775" required>
+        </div>
+        <div class="form-group">
+          <label>System ID (Username)</label>
+          <input type="text" class="form-control" id="new-smpp-user" required placeholder="smpp_username">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" class="form-control" id="new-smpp-pass" required placeholder="SecretPass123">
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Connector</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD MT ROUTE -->
+  <div class="modal-overlay" id="modal-add-mt-route">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Create MT Route (Outbound)</h3>
+        <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
+      </div>
+      <form id="form-add-mt-route">
+        <div class="form-group">
+          <label>Strategy Type</label>
+          <select class="form-control" id="new-mt-route-type">
+            <option value="DefaultRoute">DefaultRoute</option>
+            <option value="StaticMTRoute">StaticMTRoute</option>
+            <option value="RandomRoundrobinMTRoute">RandomRoundrobinMTRoute</option>
+            <option value="FailoverMTRoute">FailoverMTRoute</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Billing Rate per SMS (Credits)</label>
+          <input type="number" step="0.001" class="form-control" id="new-mt-route-rate" value="0.0" required>
+        </div>
+        <div class="form-group">
+          <label>Target Connector ID</label>
+          <input type="text" class="form-control" id="new-mt-route-cid" required placeholder="e.g. smppc(smpp_upstream_01)">
+        </div>
+        <div class="form-group">
+          <label>Attached Filters (Optional)</label>
+          <input type="text" class="form-control" id="new-mt-route-filters" placeholder="e.g. egypt_prefix">
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Route</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD FILTER -->
+  <div class="modal-overlay" id="modal-add-filter">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Create Route Traffic Filter</h3>
+        <button class="btn btn-outline" style="padding: 0.2rem 0.5rem;" onclick="closeModals()">✕</button>
+      </div>
+      <form id="form-add-filter">
+        <div class="form-group">
+          <label>Filter ID (FID)</label>
+          <input type="text" class="form-control" id="new-filter-fid" required placeholder="e.g. egypt_prefix">
+        </div>
+        <div class="form-group">
+          <label>Filter Type</label>
+          <select class="form-control" id="new-filter-type">
+            <option value="DestinationAddrFilter">DestinationAddrFilter (Phone Prefix / Regex)</option>
+            <option value="SourceAddrFilter">SourceAddrFilter (Sender ID Regex)</option>
+            <option value="ShortMessageFilter">ShortMessageFilter (Content / Keyword Regex)</option>
+            <option value="UserFilter">UserFilter (Match ESME User ID)</option>
+            <option value="TagFilter">TagFilter (Integer Metadata Tag)</option>
+            <option value="TransparentFilter">TransparentFilter (Pass-through)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label id="label-filter-val">Expression / Regex Pattern</label>
+          <input type="text" class="form-control" id="new-filter-val" placeholder="e.g. ^201[0-9]+">
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" onclick="closeModals()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Filter</button>
         </div>
       </form>
     </div>

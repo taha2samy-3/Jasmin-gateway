@@ -50,7 +50,7 @@ spec:
         {{- end }}
       backendRefs:
         - name: {{ include "jasmin.fullname" $ }}
-          port: {{ $.Values.service.ports.httpApi.port }}
+          port: {{ default $.Values.service.ports.httpApi.port $endpoint.port }}
     {{- end }}
     {{- end }}
     {{- else }}

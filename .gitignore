@@ -13,7 +13,7 @@ dist/
 gui/dist/
 build/
 *.tsbuildinfo
-AGENTS.md
+
 # Python artifacts
 __pycache__/
 *.py[cod]

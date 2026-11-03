@@ -125,6 +125,63 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if .Values.dashboard.enabled }}
+        - name: dashboard
+          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
+          imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          ports:
+            - name: dashboard
+              containerPort: {{ .Values.dashboard.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.dashboard.port | quote }}
+            - name: JASMIN_CONFIG_PATH
+              value: "/etc/jasmin/jasmin.cfg"
+            - name: JCLI_HOST
+              value: "127.0.0.1"
+            - name: JCLI_PORT
+              value: {{ .Values.service.ports.jcli.targetPort | quote }}
+            - name: JCLI_ADMIN_USERNAME
+              value: {{ .Values.credentials.jcli.username | quote }}
+            - name: JCLI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.jcli.existingSecret }}
+                  key: {{ default "jcli-password" .Values.credentials.jcli.existingSecretKey }}
+            - name: HTTP_API_URL
+              value: "http://127.0.0.1:{{ .Values.service.ports.httpApi.targetPort }}"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/jasmin/jasmin.cfg
+              subPath: jasmin.cfg
+              readOnly: true
+            - name: logs
+              mountPath: /var/log/jasmin
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /api/overview
+              port: dashboard
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/overview
+              port: dashboard
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          {{- with .Values.dashboard.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
       volumes:
         - name: config-volume
           configMap:

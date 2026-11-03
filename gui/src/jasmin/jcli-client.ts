@@ -7,7 +7,9 @@ import {
   JasminMoRoute,
   JasminMtRoute,
   JasminHttpApiStats,
-  JasminSmppsApiStats
+  JasminSmppsApiStats,
+  JasminFilter,
+  JasminInterceptor
 } from './types.js';
 
 export interface JCliConfig {
@@ -195,6 +197,7 @@ export class JCliClient {
     await this.executeCommand('mt_messaging_cred authorization http_send 1');
     await this.executeCommand('mt_messaging_cred authorization http_balance 1');
     await this.executeCommand('mt_messaging_cred authorization smpps_send 1');
+    await this.executeCommand('smpps_cred authorization bind 1');
     if (user.balance !== undefined) {
       await this.executeCommand(`mt_messaging_cred quota balance ${user.balance}`);
     }
@@ -239,6 +242,11 @@ export class JCliClient {
     return res.includes('Successfully added');
   }
 
+  public async deleteHttpConnector(cid: string): Promise<boolean> {
+    const res = await this.executeCommand(`httpccm -r ${cid}`);
+    return res.includes('Successfully removed');
+  }
+
   public async getMoRoutes(): Promise<JasminMoRoute[]> {
     const output = await this.executeCommand('morouter -l');
     const routes: JasminMoRoute[] = [];
@@ -259,15 +267,28 @@ export class JCliClient {
     return routes;
   }
 
-  public async createMoRoute(type: string, connector: string, order = 0): Promise<boolean> {
+  public async createMoRoute(type: string, connector: string, order = 0, filters: string[] = []): Promise<boolean> {
     await this.executeCommand('morouter -a');
     await this.executeCommand(`type ${type}`);
     if (type !== 'DefaultRoute') {
-      await this.executeCommand(`order ${order}`);
+      const assignedOrder = order > 0 ? order : 10;
+      await this.executeCommand(`order ${assignedOrder}`);
     }
     await this.executeCommand(`connector ${connector}`);
+    if (type !== 'DefaultRoute' && filters && filters.length > 0) {
+      await this.executeCommand(`filters ${filters.join(';')}`);
+    }
     const res = await this.executeCommand('ok');
-    return res.includes('Successfully added');
+    if (!res.includes('Successfully added')) {
+      await this.executeCommand('ko');
+      return false;
+    }
+    return true;
+  }
+
+  public async deleteMoRoute(order: number): Promise<boolean> {
+    const res = await this.executeCommand(`morouter -r ${order}`);
+    return res.includes('Successfully removed');
   }
 
   public async getMtRoutes(): Promise<JasminMtRoute[]> {
@@ -289,6 +310,158 @@ export class JCliClient {
       }
     }
     return routes;
+  }
+
+  public async getSmppConnectors(): Promise<any[]> {
+    const output = await this.executeCommand('smppccm -l');
+    const connectors: any[] = [];
+    const lines = output.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('#') || trimmed.startsWith('#Connector id')) continue;
+      const parts = trimmed.substring(1).trim().split(/\s+/);
+      if (parts.length >= 5) {
+        connectors.push({
+          cid: parts[0],
+          service: parts[1],
+          session: parts[2],
+          starts: parseInt(parts[3], 10),
+          stops: parseInt(parts[4], 10)
+        });
+      }
+    }
+    return connectors;
+  }
+
+  public async createSmppConnector(conn: {
+    cid: string;
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+  }): Promise<boolean> {
+    await this.executeCommand('smppccm -a');
+    await this.executeCommand(`cid ${conn.cid}`);
+    await this.executeCommand(`host ${conn.host}`);
+    await this.executeCommand(`port ${conn.port}`);
+    await this.executeCommand(`username ${conn.username}`);
+    await this.executeCommand(`password ${conn.password}`);
+    const res = await this.executeCommand('ok');
+    return res.includes('Successfully added');
+  }
+
+  public async startSmppConnector(cid: string): Promise<boolean> {
+    const res = await this.executeCommand(`smppccm -1 ${cid}`);
+    return !res.includes('Error');
+  }
+
+  public async stopSmppConnector(cid: string): Promise<boolean> {
+    const res = await this.executeCommand(`smppccm -0 ${cid}`);
+    return !res.includes('Error');
+  }
+
+  public async deleteSmppConnector(cid: string): Promise<boolean> {
+    const res = await this.executeCommand(`smppccm -r ${cid}`);
+    return res.includes('Successfully removed');
+  }
+
+  public async createMtRoute(type: string, rate: number, connector: string, order = 0, filters: string[] = []): Promise<boolean> {
+    await this.executeCommand('mtrouter -a');
+    await this.executeCommand(`type ${type}`);
+    await this.executeCommand(`rate ${rate}`);
+    if (type !== 'DefaultRoute') {
+      const assignedOrder = order > 0 ? order : 10;
+      await this.executeCommand(`order ${assignedOrder}`);
+    }
+    await this.executeCommand(`connector ${connector}`);
+    if (type !== 'DefaultRoute' && filters && filters.length > 0) {
+      await this.executeCommand(`filters ${filters.join(';')}`);
+    }
+    const res = await this.executeCommand('ok');
+    if (!res.includes('Successfully added')) {
+      await this.executeCommand('ko');
+      return false;
+    }
+    return true;
+  }
+
+  public async deleteMtRoute(order: number): Promise<boolean> {
+    const res = await this.executeCommand(`mtrouter -r ${order}`);
+    return res.includes('Successfully removed');
+  }
+
+  // --- Filters Management (filtersm) ---
+
+  public async getFilters(): Promise<JasminFilter[]> {
+    const output = await this.executeCommand('filter -l');
+    const filters: JasminFilter[] = [];
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('#') || trimmed.startsWith('#Filter id')) continue;
+      const parts = trimmed.substring(1).trim().split(/\s+/);
+      if (parts.length >= 2) {
+        const fid = parts[0];
+        const type = parts[1];
+        let routes = '';
+        let descIdx = 2;
+        if (parts[2] === 'MO' && parts[3] === 'MT') {
+          routes = 'MO MT';
+          descIdx = 4;
+        } else if (parts[2] === 'MO' || parts[2] === 'MT') {
+          routes = parts[2];
+          descIdx = 3;
+        }
+        const description = parts.slice(descIdx).join(' ');
+        filters.push({ fid, type, routes, description });
+      }
+    }
+    return filters;
+  }
+
+  public async createFilter(fid: string, type: string, paramKey: string, paramValue: string): Promise<boolean> {
+    await this.executeCommand('filter -a');
+    await this.executeCommand(`fid ${fid}`);
+    await this.executeCommand(`type ${type}`);
+    if (paramKey && paramValue) {
+      await this.executeCommand(`${paramKey} ${paramValue}`);
+    }
+    const res = await this.executeCommand('ok');
+    return res.includes('Successfully added');
+  }
+
+  public async deleteFilter(fid: string): Promise<boolean> {
+    const res = await this.executeCommand(`filter -r ${fid}`);
+    return res.includes('Successfully removed');
+  }
+
+  // --- Interceptors Management (interceptorm) ---
+
+  public async getMtInterceptors(): Promise<JasminInterceptor[]> {
+    const output = await this.executeCommand('mtinterceptor -l');
+    return this.parseInterceptors(output);
+  }
+
+  public async getMoInterceptors(): Promise<JasminInterceptor[]> {
+    const output = await this.executeCommand('mointerceptor -l');
+    return this.parseInterceptors(output);
+  }
+
+  private parseInterceptors(output: string): JasminInterceptor[] {
+    const interceptors: JasminInterceptor[] = [];
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('#') || trimmed.startsWith('#Order')) continue;
+      const parts = trimmed.substring(1).trim().split(/\s+/);
+      if (parts.length >= 3) {
+        interceptors.push({
+          order: parseInt(parts[0], 10),
+          type: parts[1],
+          script: parts[2],
+          filters: parts.slice(3)
+        });
+      }
+    }
+    return interceptors;
   }
 
   public async getStats(): Promise<{
