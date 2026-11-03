@@ -7,16 +7,16 @@
   "prCreation": "immediate",
   "prHourlyLimit": 0,
   "prConcurrentLimit": 0,
-  "dependencyDashboard": false,
+  "dependencyDashboard": true,
   "packageRules": [
     {
-      "description": "Allow major updates for Dockerfiles",
-      "matchManagers": ["dockerfile"],
+      "description": "Block immediate creation/acceptance of major updates: require manual Dependency Dashboard approval and disable automerge",
       "matchUpdateTypes": ["major"],
-      "enabled": true
+      "dependencyDashboardApproval": true,
+      "automerge": false
     },
     {
-      "description": "Enable silent auto-merge for GitHub Actions patch and minor updates via PR",
+      "description": "Enable auto-merge for GitHub Actions patch and minor updates via PR if CI passes",
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
@@ -31,6 +31,12 @@
     {
       "description": "Allow updates for Helm chart dependencies and image tags",
       "matchManagers": ["helm-values", "helmv3"],
+      "enabled": true
+    },
+    {
+      "description": "Allow minor and patch updates for Dockerfiles",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["minor", "patch"],
       "enabled": true
     }
   ]
