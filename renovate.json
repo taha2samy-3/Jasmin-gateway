@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "pruneStaleBranches": true,
+  "rebaseWhen": "behind-base-branch",
+  "recreateWhen": "always",
+  "prCreation": "immediate",
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "dependencyDashboard": false,
+  "packageRules": [
+    {
+      "description": "Allow major updates for Dockerfiles",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["major"],
+      "enabled": true
+    },
+    {
+      "description": "Enable silent auto-merge for GitHub Actions patch and minor updates via PR",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Allow updates for npm dependencies",
+      "matchManagers": ["npm"],
+      "enabled": true
+    },
+    {
+      "description": "Allow updates for Helm chart dependencies and image tags",
+      "matchManagers": ["helm-values", "helmv3"],
+      "enabled": true
+    }
+  ]
+}

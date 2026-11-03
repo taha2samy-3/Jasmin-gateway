@@ -80,8 +80,9 @@ service:
 dashboard:
   enabled: true
   image:
-    repository: jasmin-gui
+    repository: ghcr.io/taha2samy-3/jasmin-gui
     tag: "latest"
+    digest: ""
     pullPolicy: IfNotPresent
   port: 3000
   # nodePort: 33000

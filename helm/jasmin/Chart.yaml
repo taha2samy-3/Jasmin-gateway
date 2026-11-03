@@ -12,8 +12,13 @@ keywords:
   - messaging
   - telecommunications
 home: https://www.jasminsms.com
+icon: https://raw.githubusercontent.com/jookies/jasmin/master/misc/doc/sources/_static/jasmin-logo-small.png
 sources:
   - https://github.com/jookies/jasmin
+  - https://github.com/taha2samy-3/Jasmin-gateway
 maintainers:
-  - name: DevOps Team
-
+  - name: taha2samy-3
+    email: tsamy@trypair.ai
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/category: integration-and-delivery
