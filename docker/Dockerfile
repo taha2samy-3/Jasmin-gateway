@@ -56,7 +56,9 @@ WORKDIR /etc/jasmin
 # 1401: HTTP API & Prometheus metrics (/metrics)
 # 8990: jCli Telnet Management Console
 # 8987: Interceptor PB
-EXPOSE 2775 1401 8990 8987
+# 8989: SMPP Client Manager PB (smppccm management)
+# 8988: Router PB
+EXPOSE 2775 1401 8990 8987 8989 8988
 
 # Volumes for persistence
 VOLUME ["/etc/jasmin/store", "/var/log/jasmin"]
