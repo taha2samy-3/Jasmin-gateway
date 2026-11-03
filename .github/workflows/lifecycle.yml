@@ -1,0 +1,82 @@
+name: OCI Artifacts Lifecycle
+
+on:
+  schedule:
+    - cron: '0 2 * * 0' # Weekly every Sunday at 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      keep_latest_only:
+        description: 'Retain strictly the latest release and prune older OCI artifacts'
+        type: boolean
+        default: true
+        required: true
+
+permissions: {}
+
+jobs:
+  cleanup:
+    name: Prune Older OCI Artifacts with ORAS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
+
+      - name: Prune older releases & OCI artifacts using ORAS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          owner_lower="${OWNER,,}"
+
+          # Authenticate ORAS with GitHub Container Registry
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          # Identify latest release tag
+          latest_tag=$(git tag -l "v*" --sort=-v:refname | head -n 1)
+
+          if [ -z "$latest_tag" ]; then
+            echo "[INFO] No release tags found in repository. Nothing to prune."
+            exit 0
+          fi
+
+          echo "[INFO] Retaining strictly the latest release: $latest_tag"
+
+          # Find older release tags
+          older_tags=$(git tag -l "v*" --sort=-v:refname | grep -v "^${latest_tag}$" || true)
+
+          if [ -z "$older_tags" ]; then
+            echo "[INFO] No older releases exist. Repository currently holds only the latest release ($latest_tag)."
+            exit 0
+          fi
+
+          echo "[INFO] Older release tags to prune safely using ORAS:"
+          echo "$older_tags"
+
+          for old_tag in $older_tags; do
+            old_version="${old_tag#v}"
+            echo "[INFO] Pruning OCI artifacts for $old_tag ($old_version)..."
+
+            # 1. Prune Helm chart OCI artifact using ORAS
+            oras manifest delete --force "ghcr.io/${owner_lower}/charts/jasmin:${old_version}" || true
+
+            # 2. Prune Jasmin Gateway image OCI artifact using ORAS
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin:${old_tag}" || true
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin:${old_version}" || true
+
+            # 3. Prune Jasmin GUI image OCI artifact using ORAS
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin-gui:${old_tag}" || true
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin-gui:${old_version}" || true
+
+            # 4. Prune older GitHub Release and git tag
+            gh release delete "$old_tag" --yes --repo "$GITHUB_REPOSITORY" --cleanup-tag || true
+            echo "[INFO] Safely pruned $old_tag."
+          done
+
+          echo "[INFO] Lifecycle enforcement complete. Only $latest_tag is retained."

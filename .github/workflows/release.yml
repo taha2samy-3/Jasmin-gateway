@@ -119,3 +119,64 @@ jobs:
           [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
           gh release create "$TAG" dist/*.tgz --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" --notes-file notes.md --generate-notes --verify-tag "${prerelease[@]}"
+
+  lifecycle:
+    name: OCI Artifacts Lifecycle (Keep Latest Release Only)
+    needs: [github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
+
+      - name: Prune older releases & OCI artifacts using ORAS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          owner_lower="${OWNER,,}"
+          current_version="${CURRENT_TAG#v}"
+          echo "[INFO] Current latest release tag: $CURRENT_TAG (version: $current_version)"
+
+          # Authenticate ORAS with GitHub Container Registry
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          # Find all existing git tags starting with v* except the current one
+          older_tags=$(git tag -l "v*" --sort=-v:refname | grep -v "^${CURRENT_TAG}$" || true)
+
+          if [ -z "$older_tags" ]; then
+            echo "[INFO] No older releases found. Keeping current release $CURRENT_TAG."
+            exit 0
+          fi
+
+          echo "[INFO] Older release tags to prune safely using ORAS:"
+          echo "$older_tags"
+
+          for old_tag in $older_tags; do
+            old_version="${old_tag#v}"
+            echo "[INFO] Pruning OCI artifacts for older release: $old_tag ($old_version)..."
+
+            # 1. Safely prune old Helm chart OCI artifact using ORAS
+            oras manifest delete --force "ghcr.io/${owner_lower}/charts/jasmin:${old_version}" || true
+
+            # 2. Safely prune old Jasmin Gateway image OCI artifacts using ORAS
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin:${old_tag}" || true
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin:${old_version}" || true
+
+            # 3. Safely prune old Jasmin GUI image OCI artifacts using ORAS
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin-gui:${old_tag}" || true
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin-gui:${old_version}" || true
+
+            # 4. Safely delete old GitHub Release and git tag so only the latest release is kept
+            gh release delete "$old_tag" --yes --repo "$GITHUB_REPOSITORY" --cleanup-tag || true
+            echo "[INFO] Successfully pruned older release $old_tag."
+          done
+
+          echo "[INFO] Lifecycle policy enforcement complete. Only latest release ($CURRENT_TAG) is retained."
