@@ -190,7 +190,104 @@ jasminRoutes:
 
 ---
 
-## 7. Verification Proof
+## 7. Production Telecom Resilience, Autoscaling & Kernel Tuning
+
+High-throughput telecom workloads demand zero-downtime resilience for persistent, stateful SMPP client/server sessions. The Helm chart incorporates dedicated controls for kernel tuning, autoscaling, and zero-downtime rolling updates:
+
+### A. Kernel Network Stack Tuning (`sysctls`)
+Telecom SMS gateways handle bursts of thousands of concurrent TCP connections. Tuning the Linux kernel network stack buffers and socket queues prevents packet drops and connection throttling during peak loads:
+```yaml
+sysctls:
+  enabled: true
+  # Safe sysctls (namespaced, supported in Kubernetes 1.29+ / 1.32+ without kubelet flags)
+  safe:
+    enabled: true
+    values:
+      net.ipv4.tcp_syncookies: "1"               # Protect against SYN flood attacks
+      net.ipv4.ip_local_port_range: "1024 65535" # Expand ephemeral port range for outbound binds
+      net.ipv4.tcp_fin_timeout: "30"             # Accelerate cleanup of closed sockets
+      net.ipv4.tcp_rmem: "4096 131072 6291456"   # TCP read buffers (min, default, max)
+      net.ipv4.tcp_wmem: "4096 65536 6291456"    # TCP write buffers (min, default, max)
+      net.ipv4.tcp_keepalive_time: "60"          # Send keepalive probe after 60s idle
+      net.ipv4.tcp_keepalive_intvl: "10"         # Probe interval
+      net.ipv4.tcp_keepalive_probes: "6"         # Drop stale dead connections after 6 probes
+  # Unsafe sysctls (require --allowed-unsafe-sysctls on kubelet)
+  unsafe:
+    enabled: false
+    values:
+      net.core.somaxconn: "4096"                 # Expand listen socket backlog
+      net.ipv4.tcp_max_syn_backlog: "4096"       # Expand SYN queue backlog
+```
+
+### B. StatefulSet Update Strategy (`updateStrategy`)
+By default, Kubernetes `RollingUpdate` restarts pods immediately upon any template or configuration change. For stateful SMPP gateways, an unexpected pod restart severes all active upstream carrier binds and downstream customer sessions:
+```yaml
+updateStrategy:
+  type: OnDelete # Only restarts pods when manually deleted, allowing maintenance during quiet hours
+  # Or use partition:
+  # type: RollingUpdate
+  # rollingUpdate:
+  #   partition: 1 # Prevents automatic pod restart on template change
+```
+
+### C. Kubernetes 1.33+ In-Place Pod Resource Resizing (`resizePolicy`)
+Allows scaling CPU and Memory requests/limits dynamically on-the-fly without restarting the container:
+```yaml
+resizePolicy:
+  - resourceName: cpu
+    restartPolicy: NotRequired
+  - resourceName: memory
+    restartPolicy: NotRequired
+```
+With `restartPolicy: NotRequired`, expanding memory to handle sudden DLR spikes or traffic rushes will never trigger an `OOMKilled` restart or drop active SMPP sessions.
+
+### D. Vertical Pod Autoscaler Integration (`autoscaling.vpa`)
+Jasmin's Twisted event loop runs on a single thread bounded by Python's Global Interpreter Lock (GIL). Over-allocating CPU to a single process cannot exceed 1 core. The native VPA integration tracks actual resource consumption and provides advisory recommendations:
+```yaml
+autoscaling:
+  vpa:
+    enabled: true
+    updateMode: "Off" # Recommendations-only mode (safest for SMPP production)
+    controlledResources:
+      - cpu
+      - memory
+    minAllowed:
+      cpu: 250m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 2000m
+      memory: 8Gi
+```
+
+### E. Telecom Alerting Pack (`monitoring.prometheusRule`)
+Pre-packaged Prometheus Operator alerting rules monitoring Jasmin core telemetry:
+```yaml
+monitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics
+  prometheusRule:
+    enabled: true
+    rules:
+      smppConnectorDown:
+        severity: critical
+        for: 1m
+      highSubmitErrorRate:
+        severity: warning
+        threshold: "0.05"
+        for: 2m
+      reactorHighCPU:
+        severity: warning
+        for: 5m
+```
+* **`JasminSMPPConnectorDown`**: Critical alert when upstream carrier SMPP session bound count reaches 0.
+* **`JasminHighSubmitErrorRate`**: Warning when MT message submit error rate exceeds 5%.
+* **`JasminReactorHighCPU`**: Warning when single-core CPU utilization exceeds 90% for >5m, signaling the need for horizontal pod scaling.
+
+---
+
+## 8. Verification Proof
 
 - **Live jCLI Login & Route Provisioning Test:**
   Ran a live test stack with `redis`, `rabbitmq`, and `jasmin:local`. Verified automated bootstrap and Telnet console:
@@ -215,7 +312,7 @@ jasminRoutes:
 
 ---
 
-## 8. Enterprise Web Management Dashboard (`gui/`)
+## 9. Enterprise Web Management Dashboard (`gui/`)
 
 A high-performance Node.js (TypeScript) Web Management Console connecting directly to Jasmin Gateway on `127.0.0.1:8990` and `127.0.0.1:1401`.
 

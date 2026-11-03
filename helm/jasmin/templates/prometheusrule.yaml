@@ -1,0 +1,58 @@
+{{- if .Values.monitoring.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "jasmin.fullname" . }}
+  labels:
+    {{- include "jasmin.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.monitoring.prometheusRule.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: {{ include "jasmin.fullname" . }}.alerts
+      rules:
+        - alert: JasminSMPPConnectorDown
+          expr: jasmin_smppc_bound_count{namespace="{{ .Release.Namespace }}"} == 0
+          for: {{ .Values.monitoring.prometheusRule.rules.smppConnectorDown.for | default "1m" }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.rules.smppConnectorDown.severity | default "critical" }}
+            {{- with .Values.monitoring.prometheusRule.rules.smppConnectorDown.additionalLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "Jasmin SMPP upstream connector is disconnected"
+            description: "An SMPP connector in namespace {{ .Release.Namespace }} has 0 bound sessions for more than 1 minute."
+
+        - alert: JasminHighSubmitErrorRate
+          expr: rate(jasmin_http_api_send_errors_total{namespace="{{ .Release.Namespace }}"}[5m]) / (rate(jasmin_http_api_send_total{namespace="{{ .Release.Namespace }}"}[5m]) + 0.001) > {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.threshold | default "0.05" }}
+          for: {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.for | default "2m" }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.severity | default "warning" }}
+            {{- with .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.additionalLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "Jasmin high message submit error rate"
+            description: "More than 5% of message submissions are failing in namespace {{ .Release.Namespace }}."
+
+        - alert: JasminReactorHighCPU
+          expr: rate(container_cpu_usage_seconds_total{container="{{ .Chart.Name }}",namespace="{{ .Release.Namespace }}"}[2m]) > 0.90
+          for: {{ .Values.monitoring.prometheusRule.rules.reactorHighCPU.for | default "5m" }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.rules.reactorHighCPU.severity | default "warning" }}
+            {{- with .Values.monitoring.prometheusRule.rules.reactorHighCPU.additionalLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "Jasmin single-core Twisted reactor near saturation"
+            description: "Jasmin core process CPU usage exceeds 90% of a single core for >5m in namespace {{ .Release.Namespace }}. Consider horizontal scaling."
+
+        {{- with .Values.monitoring.prometheusRule.additionalRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

@@ -2,6 +2,14 @@
 
 replicaCount: 1
 
+# StatefulSet Update Strategy
+# Recommended: type: OnDelete or RollingUpdate with partition to prevent unexpected restarts
+# from dropping active, long-lived SMPP connections during configuration updates.
+updateStrategy:
+  type: RollingUpdate
+  # rollingUpdate:
+  #   partition: 0
+
 image:
   repository: ghcr.io/taha2samy-3/jasmin
   tag: "0.11.1"
@@ -33,6 +41,32 @@ securityContext:
   runAsNonRoot: true
   runAsUser: 1000
   runAsGroup: 1000
+
+# =============================================================================
+# Kernel Network Stack Tuning (sysctls)
+# Fine-tune TCP socket queues, buffers, and timeouts for high-throughput telecom workloads.
+# Note: sysctls are applied only when hostNetwork is false.
+# =============================================================================
+sysctls:
+  enabled: false
+  # Safe sysctls (namespaced, allowed in Kubernetes 1.29+ / 1.32+ without kubelet flags)
+  safe:
+    enabled: true
+    values:
+      net.ipv4.tcp_syncookies: "1"
+      net.ipv4.ip_local_port_range: "1024 65535"
+      net.ipv4.tcp_fin_timeout: "30"
+      net.ipv4.tcp_rmem: "4096 131072 6291456"
+      net.ipv4.tcp_wmem: "4096 65536 6291456"
+      net.ipv4.tcp_keepalive_time: "60"
+      net.ipv4.tcp_keepalive_intvl: "10"
+      net.ipv4.tcp_keepalive_probes: "6"
+  # Unsafe sysctls (require --allowed-unsafe-sysctls on kubelet)
+  unsafe:
+    enabled: false
+    values:
+      net.core.somaxconn: "4096"
+      net.ipv4.tcp_max_syn_backlog: "4096"
 
 # Set hostNetwork to true only if running on bare-metal without a LoadBalancer
 # or if you strictly need the pod to bind directly to the node's network interfaces.
@@ -341,13 +375,52 @@ interceptor:
   enabled: true
   embedded: true
 
-# Monitoring
+# Monitoring & Alerting
 monitoring:
   serviceMonitor:
     enabled: false
     interval: 30s
     path: /metrics
     labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    annotations: {}
+    rules:
+      smppConnectorDown:
+        severity: critical
+        for: 1m
+        additionalLabels: {}
+      highSubmitErrorRate:
+        severity: warning
+        for: 2m
+        threshold: "0.05"
+        additionalLabels: {}
+      reactorHighCPU:
+        severity: warning
+        for: 5m
+        additionalLabels: {}
+    additionalRules: []
+
+# =============================================================================
+# Autoscaling (Vertical Pod Autoscaler)
+# Provides data-driven resource recommendations for Jasmin's Twisted reactor and Python heap.
+# =============================================================================
+autoscaling:
+  vpa:
+    enabled: false
+    updateMode: "Off" # "Off" (recommendations only, safe for SMPP), "Initial", or "InPlaceOrRecreate"
+    controlledResources:
+      - cpu
+      - memory
+    labels: {}
+    annotations: {}
+    minAllowed:
+      cpu: 250m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 2000m
+      memory: 8Gi
 
 # Resource limits & requests
 resources:
@@ -357,6 +430,15 @@ resources:
   requests:
     cpu: 250m
     memory: 512Mi
+
+# Kubernetes 1.33+ In-Place Pod Resource Resizing (resizePolicy)
+# Allows resizing container CPU and memory limits on-the-fly without restarting the container,
+# preventing SMPP disconnects and downtime.
+resizePolicy: []
+  # - resourceName: cpu
+  #   restartPolicy: NotRequired
+  # - resourceName: memory
+  #   restartPolicy: NotRequired
 
 nodeSelector: {}
 tolerations: []

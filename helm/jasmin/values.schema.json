@@ -3,7 +3,12 @@
   "title": "Jasmin SMS Gateway Values Schema",
   "description": "JSON schema for Jasmin SMS Gateway Helm Chart values",
   "type": "object",
-  "required": ["replicaCount", "image", "service", "credentials"],
+  "required": [
+    "replicaCount",
+    "image",
+    "service",
+    "credentials"
+  ],
   "properties": {
     "replicaCount": {
       "type": "integer",
@@ -13,7 +18,9 @@
     "image": {
       "type": "object",
       "description": "Jasmin SMS Gateway container image configuration",
-      "required": ["repository"],
+      "required": [
+        "repository"
+      ],
       "properties": {
         "repository": {
           "type": "string",
@@ -32,7 +39,11 @@
         "pullPolicy": {
           "type": "string",
           "description": "Kubernetes image pull policy",
-          "enum": ["Always", "IfNotPresent", "Never"]
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         }
       }
     },
@@ -99,11 +110,15 @@
           "properties": {
             "drop": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             },
             "add": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             }
           }
         }
@@ -116,17 +131,27 @@
     "service": {
       "type": "object",
       "description": "Kubernetes Service configuration for Jasmin Gateway",
-      "required": ["type", "ports"],
+      "required": [
+        "type",
+        "ports"
+      ],
       "properties": {
         "type": {
           "type": "string",
           "description": "Service type",
-          "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
         },
         "externalTrafficPolicy": {
           "type": "string",
           "description": "External traffic policy (Local preserves client IP)",
-          "enum": ["Local", "Cluster"]
+          "enum": [
+            "Local",
+            "Cluster"
+          ]
         },
         "loadBalancerIP": {
           "type": "string",
@@ -134,7 +159,9 @@
         },
         "loadBalancerSourceRanges": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "CIDR ranges allowed to access the LoadBalancer"
         },
         "annotations": {
@@ -142,50 +169,147 @@
         },
         "ports": {
           "type": "object",
-          "required": ["smpp", "httpApi", "jcli", "interceptor"],
+          "required": [
+            "smpp",
+            "httpApi",
+            "jcli",
+            "interceptor"
+          ],
           "properties": {
             "smpp": {
               "type": "object",
-              "required": ["port", "targetPort"],
+              "required": [
+                "port",
+                "targetPort"
+              ],
               "properties": {
-                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
-                "name": { "type": "string" },
-                "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "targetPort": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "protocol": {
+                  "type": "string",
+                  "enum": [
+                    "TCP",
+                    "UDP"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "nodePort": {
+                  "type": "integer",
+                  "minimum": 30000,
+                  "maximum": 32767
+                }
               }
             },
             "httpApi": {
               "type": "object",
-              "required": ["port", "targetPort"],
+              "required": [
+                "port",
+                "targetPort"
+              ],
               "properties": {
-                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
-                "name": { "type": "string" },
-                "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "targetPort": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "protocol": {
+                  "type": "string",
+                  "enum": [
+                    "TCP",
+                    "UDP"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "nodePort": {
+                  "type": "integer",
+                  "minimum": 30000,
+                  "maximum": 32767
+                }
               }
             },
             "jcli": {
               "type": "object",
-              "required": ["port", "targetPort"],
+              "required": [
+                "port",
+                "targetPort"
+              ],
               "properties": {
-                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
-                "name": { "type": "string" },
-                "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "targetPort": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "protocol": {
+                  "type": "string",
+                  "enum": [
+                    "TCP",
+                    "UDP"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "nodePort": {
+                  "type": "integer",
+                  "minimum": 30000,
+                  "maximum": 32767
+                }
               }
             },
             "interceptor": {
               "type": "object",
-              "required": ["port", "targetPort"],
+              "required": [
+                "port",
+                "targetPort"
+              ],
               "properties": {
-                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
-                "name": { "type": "string" },
-                "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "targetPort": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "protocol": {
+                  "type": "string",
+                  "enum": [
+                    "TCP",
+                    "UDP"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "nodePort": {
+                  "type": "integer",
+                  "minimum": 30000,
+                  "maximum": 32767
+                }
               }
             }
           }
@@ -202,12 +326,29 @@
         },
         "image": {
           "type": "object",
-          "required": ["repository"],
+          "required": [
+            "repository"
+          ],
           "properties": {
-            "repository": { "type": "string", "minLength": 1 },
-            "tag": { "type": "string" },
-            "digest": { "type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$" },
-            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(sha256:[a-f0-9]{64})?$"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
           }
         },
         "port": {
@@ -233,78 +374,147 @@
       "type": "object",
       "description": "Kubernetes Ingress configuration",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "className": { "type": "string" },
-        "annotations": { "type": "object" },
-        "hosts": { "type": "array" },
-        "tls": { "type": "array" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "hosts": {
+          "type": "array"
+        },
+        "tls": {
+          "type": "array"
+        }
       }
     },
     "httpRoute": {
       "type": "object",
       "description": "Kubernetes Gateway API HTTPRoute (gateway.networking.k8s.io/v1)",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "annotations": { "type": "object" },
-        "parentRefs": { "type": "array" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "parentRefs": {
+          "type": "array"
+        },
         "hostnames": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
-        "endpoints": { "type": "object" },
-        "rules": { "type": "array" }
+        "endpoints": {
+          "type": "object"
+        },
+        "rules": {
+          "type": "array"
+        }
       }
     },
     "persistence": {
       "type": "object",
       "description": "Persistent volume claim configuration for Jasmin state and logs",
-      "required": ["enabled", "size"],
+      "required": [
+        "enabled",
+        "size"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "storageClass": { "type": "string" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "storageClass": {
+          "type": "string"
+        },
         "accessMode": {
           "type": "string",
-          "enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany"]
+          "enum": [
+            "ReadWriteOnce",
+            "ReadOnlyMany",
+            "ReadWriteMany"
+          ]
         },
         "size": {
           "type": "string",
           "pattern": "^[0-9]+(Gi|Mi|Ti)$"
         },
-        "annotations": { "type": "object" }
+        "annotations": {
+          "type": "object"
+        }
       }
     },
     "credentials": {
       "type": "object",
       "description": "Authentication credentials for Jasmin daemons and dependent services",
-      "required": ["jcli", "rabbitmq", "redis"],
+      "required": [
+        "jcli",
+        "rabbitmq",
+        "redis"
+      ],
       "properties": {
         "jcli": {
           "type": "object",
-          "required": ["username"],
+          "required": [
+            "username"
+          ],
           "properties": {
-            "username": { "type": "string", "minLength": 1 },
-            "password": { "type": "string" },
-            "existingSecret": { "type": "string" },
-            "existingSecretKey": { "type": "string" }
+            "username": {
+              "type": "string",
+              "minLength": 1
+            },
+            "password": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "existingSecretKey": {
+              "type": "string"
+            }
           }
         },
         "rabbitmq": {
           "type": "object",
-          "required": ["username"],
+          "required": [
+            "username"
+          ],
           "properties": {
-            "username": { "type": "string", "minLength": 1 },
-            "password": { "type": "string" },
-            "vhost": { "type": "string" },
-            "existingSecret": { "type": "string" },
-            "existingSecretKey": { "type": "string" }
+            "username": {
+              "type": "string",
+              "minLength": 1
+            },
+            "password": {
+              "type": "string"
+            },
+            "vhost": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "existingSecretKey": {
+              "type": "string"
+            }
           }
         },
         "redis": {
           "type": "object",
           "properties": {
-            "password": { "type": "string" },
-            "existingSecret": { "type": "string" },
-            "existingSecretKey": { "type": "string" }
+            "password": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "existingSecretKey": {
+              "type": "string"
+            }
           }
         }
       }
@@ -312,31 +522,63 @@
     "redis": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
     "externalRedis": {
       "type": "object",
-      "required": ["host", "port"],
+      "required": [
+        "host",
+        "port"
+      ],
       "properties": {
-        "host": { "type": "string", "minLength": 1 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
     "rabbitmq": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
     "externalRabbitMQ": {
       "type": "object",
-      "required": ["host", "port"],
+      "required": [
+        "host",
+        "port"
+      ],
       "properties": {
-        "host": { "type": "string", "minLength": 1 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
     "config": {
@@ -345,41 +587,100 @@
       "properties": {
         "logLevel": {
           "type": "string",
-          "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+            "CRITICAL"
+          ]
         },
-        "logPrivacy": { "type": "boolean" },
-        "smppServer": { "type": "object" },
-        "smppServerPb": { "type": "object" },
-        "clientManagement": { "type": "object" },
-        "router": { "type": "object" },
-        "httpApi": { "type": "object" },
-        "jcli": { "type": "object" },
-        "redisClient": { "type": "object" },
-        "amqpBroker": { "type": "object" },
-        "interceptorClient": { "type": "object" },
-        "dlr": { "type": "object" },
-        "deliversmThrower": { "type": "object" },
-        "interceptorPb": { "type": "object" },
-        "extraConfig": { "type": "string" },
-        "customJasminCfg": { "type": "string" },
-        "customInterceptorCfg": { "type": "string" }
+        "logPrivacy": {
+          "type": "boolean"
+        },
+        "smppServer": {
+          "type": "object"
+        },
+        "smppServerPb": {
+          "type": "object"
+        },
+        "clientManagement": {
+          "type": "object"
+        },
+        "router": {
+          "type": "object"
+        },
+        "httpApi": {
+          "type": "object"
+        },
+        "jcli": {
+          "type": "object"
+        },
+        "redisClient": {
+          "type": "object"
+        },
+        "amqpBroker": {
+          "type": "object"
+        },
+        "interceptorClient": {
+          "type": "object"
+        },
+        "dlr": {
+          "type": "object"
+        },
+        "deliversmThrower": {
+          "type": "object"
+        },
+        "interceptorPb": {
+          "type": "object"
+        },
+        "extraConfig": {
+          "type": "string"
+        },
+        "customJasminCfg": {
+          "type": "string"
+        },
+        "customInterceptorCfg": {
+          "type": "string"
+        }
       }
     },
     "jasminRoutes": {
       "type": "object",
       "description": "Pre-provisioned internal Jasmin routes and HTTP connectors",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "httpConnectors": { "type": ["array", "null"] },
-        "moRoutes": { "type": ["array", "null"] },
-        "mtRoutes": { "type": ["array", "null"] }
+        "enabled": {
+          "type": "boolean"
+        },
+        "httpConnectors": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "moRoutes": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mtRoutes": {
+          "type": [
+            "array",
+            "null"
+          ]
+        }
       }
     },
     "interceptor": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "embedded": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "embedded": {
+          "type": "boolean"
+        }
       }
     },
     "monitoring": {
@@ -388,10 +689,90 @@
         "serviceMonitor": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "interval": { "type": "string" },
-            "path": { "type": "string" },
-            "labels": { "type": "object" }
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object"
+            }
+          }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "description": "PrometheusRule alerting rules for Jasmin telecom and gateway metrics",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "labels": {
+              "type": "object"
+            },
+            "annotations": {
+              "type": "object"
+            },
+            "rules": {
+              "type": "object",
+              "properties": {
+                "smppConnectorDown": {
+                  "type": "object",
+                  "properties": {
+                    "severity": {
+                      "type": "string"
+                    },
+                    "for": {
+                      "type": "string"
+                    },
+                    "additionalLabels": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "highSubmitErrorRate": {
+                  "type": "object",
+                  "properties": {
+                    "severity": {
+                      "type": "string"
+                    },
+                    "for": {
+                      "type": "string"
+                    },
+                    "threshold": {
+                      "type": "string"
+                    },
+                    "additionalLabels": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "reactorHighCPU": {
+                  "type": "object",
+                  "properties": {
+                    "severity": {
+                      "type": "string"
+                    },
+                    "for": {
+                      "type": "string"
+                    },
+                    "additionalLabels": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            },
+            "additionalRules": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
           }
         }
       }
@@ -400,12 +781,176 @@
       "type": "object",
       "description": "Pod resource requests and limits"
     },
-    "nodeSelector": { "type": "object" },
-    "tolerations": { "type": "array" },
-    "affinity": { "type": "object" },
-    "extraEnv": { "type": "array" },
-    "extraEnvFrom": { "type": "array" },
-    "extraVolumes": { "type": "array" },
-    "extraVolumeMounts": { "type": "array" }
+    "nodeSelector": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "extraEnv": {
+      "type": "array"
+    },
+    "extraEnvFrom": {
+      "type": "array"
+    },
+    "extraVolumes": {
+      "type": "array"
+    },
+    "extraVolumeMounts": {
+      "type": "array"
+    },
+    "updateStrategy": {
+      "type": "object",
+      "description": "StatefulSet update strategy to manage pod recreation during upgrades",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "RollingUpdate",
+            "OnDelete"
+          ],
+          "default": "RollingUpdate"
+        },
+        "rollingUpdate": {
+          "type": "object",
+          "properties": {
+            "partition": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "sysctls": {
+      "type": "object",
+      "description": "Kernel TCP/IP network stack tuning for high-throughput telecom workloads",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "safe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "values": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "unsafe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "values": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "resizePolicy": {
+      "type": "array",
+      "description": "Kubernetes 1.33+ in-place pod resource resizing policy without restarting the container",
+      "items": {
+        "type": "object",
+        "required": [
+          "resourceName",
+          "restartPolicy"
+        ],
+        "properties": {
+          "resourceName": {
+            "type": "string",
+            "enum": [
+              "cpu",
+              "memory"
+            ]
+          },
+          "restartPolicy": {
+            "type": "string",
+            "enum": [
+              "NotRequired",
+              "RestartContainer"
+            ]
+          }
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "description": "Vertical Pod Autoscaler (VPA) configuration for automated right-sizing recommendations",
+      "properties": {
+        "vpa": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "updateMode": {
+              "type": "string",
+              "enum": [
+                "Off",
+                "Initial",
+                "Recreate",
+                "InPlaceOrRecreate",
+                "Auto"
+              ],
+              "default": "Off"
+            },
+            "controlledResources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "labels": {
+              "type": "object"
+            },
+            "annotations": {
+              "type": "object"
+            },
+            "minAllowed": {
+              "type": "object",
+              "properties": {
+                "cpu": {
+                  "type": "string"
+                },
+                "memory": {
+                  "type": "string"
+                }
+              }
+            },
+            "maxAllowed": {
+              "type": "object",
+              "properties": {
+                "cpu": {
+                  "type": "string"
+                },
+                "memory": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
