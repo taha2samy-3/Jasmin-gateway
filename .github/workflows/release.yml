@@ -170,7 +170,9 @@ jobs:
             oras manifest delete --force "ghcr.io/${owner_lower}/jasmin:${old_tag}" || true
             oras manifest delete --force "ghcr.io/${owner_lower}/jasmin:${old_version}" || true
 
-            # 3. Safely prune old Jasmin GUI image OCI artifacts using ORAS
+            # 3. Safely prune old Dashboard image OCI artifacts using ORAS
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin-dashboard:${old_tag}" || true
+            oras manifest delete --force "ghcr.io/${owner_lower}/jasmin-dashboard:${old_version}" || true
             oras manifest delete --force "ghcr.io/${owner_lower}/jasmin-gui:${old_tag}" || true
             oras manifest delete --force "ghcr.io/${owner_lower}/jasmin-gui:${old_version}" || true
 

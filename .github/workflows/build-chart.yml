@@ -74,7 +74,7 @@ jobs:
           [[ "$GUI_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::invalid gui digest $GUI_DIGEST"; exit 1; }
           version="${TAG#v}"
           jasmin_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin"
-          gui_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-gui"
+          gui_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-dashboard"
           prev="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
 
           changes="$(git log --format='%s' ${prev:+"$prev..$TAG"} -- . ':!.github' | head -30 |
@@ -84,7 +84,7 @@ jobs:
           export version jasmin_image gui_image changes
           yq -i '
             .version = strenv(version) |
-            .annotations["artifacthub.io/images"] = "- name: jasmin\n  image: " + strenv(jasmin_image) + ":" + strenv(version) + "\n  platforms:\n    - linux/amd64\n    - linux/arm64\n- name: jasmin-gui\n  image: " + strenv(gui_image) + ":" + strenv(version) + "\n  platforms:\n    - linux/amd64\n    - linux/arm64\n" |
+            .annotations["artifacthub.io/images"] = "- name: jasmin\n  image: " + strenv(jasmin_image) + ":" + strenv(version) + "\n  platforms:\n    - linux/amd64\n    - linux/arm64\n- name: jasmin-dashboard\n  image: " + strenv(gui_image) + ":" + strenv(version) + "\n  platforms:\n    - linux/amd64\n    - linux/arm64\n" |
             .annotations["artifacthub.io/changes"] = strenv(changes) + "\n" |
             .annotations["artifacthub.io/prerelease"] = (strenv(version) | test("-") | tostring)
           ' "$CHART_DIR/Chart.yaml"
@@ -184,6 +184,7 @@ jobs:
         env:
           CHART: ${{ steps.push.outputs.chart }}
         run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
           oras push "$CHART:artifacthub.io" \
             --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
             artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml

@@ -214,7 +214,7 @@ jobs:
   # 3. PARALLEL MATRIX BUILDS: JASMIN GUI
   # ============================================================================
   build-gui:
-    name: Build GUI (${{ matrix.platform.name }})
+    name: Build Dashboard (${{ matrix.platform.name }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -239,7 +239,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::invalid version $VERSION"; exit 1; }
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-gui" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-dashboard" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -255,7 +255,7 @@ jobs:
         with:
           images: ${{ steps.vars.outputs.image }}
           labels: |
-            org.opencontainers.image.title=jasmin-gui
+            org.opencontainers.image.title=jasmin-dashboard
             org.opencontainers.image.description=Enterprise Web Dashboard for Jasmin SMS Gateway on Wolfi Linux
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -281,16 +281,16 @@ jobs:
       - name: Upload digest artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: digests-gui-${{ matrix.platform.name }}
+          name: digests-dashboard-${{ matrix.platform.name }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   # ============================================================================
-  # 4. MERGE & ATTEST: JASMIN GUI (OCI 1.1 INDEX + SLSA 3 + COSIGN)
+  # 4. MERGE & ATTEST: JASMIN DASHBOARD (OCI 1.1 INDEX + SLSA 3 + COSIGN)
   # ============================================================================
   merge-gui:
-    name: Merge & Attest GUI (OCI 1.1)
+    name: Merge & Attest Dashboard (OCI 1.1)
     needs: [build-gui]
     runs-on: ubuntu-latest
     permissions:
@@ -307,10 +307,10 @@ jobs:
           ref: ${{ inputs.version }}
           persist-credentials: false
 
-      - name: Download all GUI digests
+      - name: Download all Dashboard digests
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: digests-gui-*
+          pattern: digests-dashboard-*
           path: /tmp/digests
           merge-multiple: true
 
@@ -319,7 +319,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-gui" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jasmin-dashboard" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
