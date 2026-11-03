@@ -1,5 +1,6 @@
 # Artifact Hub repository metadata file
 # https://artifacthub.io/docs/topics/repositories/repository-metadata/
+repositoryID: "fed03f38-7b4f-418d-b61a-22edec7abb2e"
 owners:
   - name: taha2samy-3
     email: tsamy@trypair.ai
