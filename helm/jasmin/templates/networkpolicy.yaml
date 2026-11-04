@@ -40,15 +40,14 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     {{- end }}
-    {{- if .Values.monitoring.enabled }}
-    # 4. Metrics Scrape Port
+    {{- if and .Values.networkPolicy.metrics.from .Values.networkPolicy.httpApi.from }}
+    # 4. Prometheus scraping of /metrics on the HTTP API port (only needed when the HTTP API
+    #    rule above is restricted; otherwise that rule already admits the scraper).
     - ports:
         - protocol: TCP
-          port: {{ .Values.monitoring.serviceMonitor.targetPort | default 9090 }}
-      {{- with .Values.networkPolicy.metrics.from }}
+          port: {{ .Values.service.ports.httpApi.targetPort }}
       from:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- toYaml .Values.networkPolicy.metrics.from | nindent 8 }}
     {{- end }}
     # 5. jCLI Port (Restricted to Pod Localhost/Sidecar by default)
     - ports:

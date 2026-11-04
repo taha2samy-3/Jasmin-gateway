@@ -70,6 +70,10 @@
         "name": {
           "type": "string",
           "description": "The name of the ServiceAccount to use"
+        },
+        "automountToken": {
+          "type": "boolean",
+          "description": "Mount a Kubernetes API token into the pod (not needed by Jasmin or the console)"
         }
       }
     },
@@ -313,6 +317,10 @@
               }
             }
           }
+        },
+        "exposeAdminPorts": {
+          "type": "boolean",
+          "description": "Also publish jCLI/console on a LoadBalancer/NodePort Service (unsafe)"
         }
       }
     },
@@ -444,6 +452,46 @@
               "pattern": "^((admin|operator|viewer)=[^,=]+(,(admin|operator|viewer)=[^,=]+)*)?$"
             }
           }
+        },
+        "httpRoute": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "parentRefs": {
+              "type": "array"
+            },
+            "hostnames": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "annotations": {
+              "type": "object"
+            }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "className": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "annotations": {
+              "type": "object"
+            },
+            "tls": {
+              "type": "array"
+            }
+          }
         }
       }
     },
@@ -523,6 +571,9 @@
         },
         "annotations": {
           "type": "object"
+        },
+        "logsSize": {
+          "type": "string"
         }
       }
     },
@@ -600,7 +651,9 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "const": false,
+          "description": "Not bundled; use externalRedis"
         },
         "port": {
           "type": "integer",
@@ -631,7 +684,9 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "const": false,
+          "description": "Not bundled; use externalRabbitMQ"
         },
         "port": {
           "type": "integer",
@@ -1115,6 +1170,27 @@
           "type": "array"
         }
       }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "podLabels": {
+      "type": "object"
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 0
     }
   }
 }

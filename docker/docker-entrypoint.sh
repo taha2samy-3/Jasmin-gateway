@@ -59,6 +59,26 @@ case " $* " in
         ;;
 esac
 
+# jasmind loads the persisted configuration with -u/-p at start-up. The image CMD carries the
+# default jCLI credentials: replace them with the configured ones so the load succeeds.
+if [ "$(basename "$1")" = "jasmind.py" ] && [ -n "${JCLI_ADMIN_RAW_PASSWORD:-}" ]; then
+    cmd="$1"; shift
+    new_args=""
+    skip=""
+    for arg in "$@"; do
+        if [ -n "$skip" ]; then skip=""; continue; fi
+        case "$arg" in
+            -u|--username|-p|--password) skip=1; continue ;;
+            --username=*|--password=*) continue ;;
+            --enable-interceptor-client)
+                [ "${ENABLE_INTERCEPTOR_CLIENT:-true}" = "false" ] && continue ;;
+        esac
+        new_args="$new_args $(printf '%s' "$arg" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/")"
+    done
+    eval "set -- \"\$cmd\" $new_args"
+    set -- "$@" -u "${JCLI_ADMIN_USERNAME:-jcliadmin}" -p "${JCLI_ADMIN_RAW_PASSWORD}"
+fi
+
 # Point jasmind at the runtime copy unless the caller passed its own -c/--config.
 if [ "${USE_RUNTIME_CFG}" = "1" ] && [ "$(basename "$1")" = "jasmind.py" ]; then
     case " $* " in
@@ -67,6 +87,16 @@ if [ "${USE_RUNTIME_CFG}" = "1" ] && [ "$(basename "$1")" = "jasmind.py" ]; then
     esac
 fi
 
-# Log the command without the jCLI password argument.
-echo "[INFO] Starting command: $(echo "$@" | sed -E 's/(-p|--password)( |=)[^ ]+/\1\2******/')"
+# Log the command without the jCLI password (masked per argument, so spaces cannot leak it).
+shown=""
+mask_next=""
+for arg in "$@"; do
+    if [ -n "$mask_next" ]; then shown="$shown ******"; mask_next=""; continue; fi
+    case "$arg" in
+        -p|--password) mask_next=1; shown="$shown $arg" ;;
+        --password=*) shown="$shown --password=******" ;;
+        *) shown="$shown $arg" ;;
+    esac
+done
+echo "[INFO] Starting command:${shown}"
 exec "$@"

@@ -1,6 +1,22 @@
 ========================================================================
  Jasmin SMS Gateway has been installed successfully!
 ========================================================================
+{{- if and .Values.podDisruptionBudget.enabled (le (int .Values.replicaCount) 1) (eq (toString .Values.podDisruptionBudget.minAvailable) "1") }}
+
+WARNING: podDisruptionBudget.minAvailable=1 with a single replica blocks node drains and
+         cluster upgrades until the PDB is removed. Use maxUnavailable or disable the PDB.
+{{- end }}
+{{- if gt (int .Values.replicaCount) 1 }}
+
+WARNING: replicaCount={{ .Values.replicaCount }}: every Jasmin pod has its own jCLI store and opens its
+         own SMPP binds. Configuration is not shared between replicas.
+{{- end }}
+{{- if and (not .Values.credentials.jcli.password) (not .Values.credentials.jcli.existingSecret) }}
+
+NOTE: a random jCLI password was generated and is kept across "helm upgrade". If you render
+      the chart without cluster access (Argo CD, Flux, helm template), set
+      credentials.jcli.password or credentials.jcli.existingSecret instead.
+{{- end }}
 
 1. Accessing the jCLI (Management Console via Telnet):
    Forward the jCLI port to your local machine:
@@ -10,7 +26,8 @@
    Connect via Telnet:
      telnet 127.0.0.1 8990
      Username: {{ .Values.credentials.jcli.username }}
-     Password: (defined in Secret '{{ include "jasmin.fullname" . }}-secrets')
+     Password: kubectl --namespace {{ .Release.Namespace }} get secret {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.jcli.existingSecret }} -o jsonpath='{.data.{{ default "jcli-password" .Values.credentials.jcli.existingSecretKey }}}' | base64 -d
+   In-cluster: {{ include "jasmin.fullname" . }}-admin.{{ .Release.Namespace }}.svc:{{ .Values.service.ports.jcli.port }}{{ if and (ne .Values.service.type "ClusterIP") (not .Values.service.exposeAdminPorts) }} (not exposed on the {{ .Values.service.type }} Service){{ end }}
 
 2. Accessing the HTTP API & Prometheus Metrics:
    Forward the HTTP API port:
@@ -32,5 +49,42 @@
 4. Persistence Note:
    Jasmin configurations (users, groups, filters, connectors, routes) created via jCLI
    must be saved using the `persist` command in jCLI to write changes to /etc/jasmin/store.
+   Changes made from the Jasmin Console are persisted automatically.
+{{- if .Values.dashboard.enabled }}
+
+5. Jasmin Console (web management):
+{{- $consoleUrl := include "jasmin.consoleUrl" . }}
+{{- if $consoleUrl }}
+   URL: {{ $consoleUrl }}
+{{- else }}
+   Forward the console port, then open http://127.0.0.1:{{ .Values.dashboard.port }}
+     kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.dashboard.port }}:{{ .Values.dashboard.port }}
+{{- end }}
+
+   Administrator account: {{ .Values.dashboard.admin.username }}
+{{- if .Values.dashboard.admin.existingSecret }}
+   Password: Secret '{{ .Values.dashboard.admin.existingSecret }}', key '{{ .Values.dashboard.admin.existingSecretKey }}'
+{{- else if .Values.dashboard.admin.password }}
+   Password: Secret '{{ include "jasmin.fullname" . }}-secrets', key 'dashboard-admin-password'
+{{- else }}
+   Password: generated on first start and printed once in the console log:
+     kubectl --namespace {{ .Release.Namespace }} logs $POD_NAME -c dashboard | grep -A1 "Initial administrator"
+   You will be asked to change it at first sign-in.
+{{- end }}
+{{- if .Values.dashboard.oidc.enabled }}
+
+   Single sign-on ({{ .Values.dashboard.oidc.displayName }}) is enabled.
+   Register this redirect URI with your identity provider:
+     {{ $consoleUrl | default "<console URL>" }}/auth/oidc/callback
+{{- if .Values.dashboard.oidc.roleMap }}
+   Roles are assigned from the "{{ .Values.dashboard.oidc.roleClaim }}" claim ({{ .Values.dashboard.oidc.roleMap }}).
+{{- else }}
+   New SSO users wait for approval in "Access & audit" until an administrator assigns a role.
+{{- end }}
+{{- if not $consoleUrl }}
+   WARNING: set dashboard.publicUrl (or expose the console) so the OIDC redirect URI is correct.
+{{- end }}
+{{- end }}
+{{- end }}
 ========================================================================
 

@@ -1,0 +1,32 @@
+{{- if and .Values.dashboard.enabled .Values.dashboard.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "jasmin.fullname" . }}-console
+  labels:
+    {{- include "jasmin.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+  {{- with .Values.dashboard.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.dashboard.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.dashboard.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "dashboard.ingress.host is required" .Values.dashboard.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "jasmin.fullname" . }}-admin
+                port:
+                  number: {{ .Values.dashboard.port }}
+{{- end }}

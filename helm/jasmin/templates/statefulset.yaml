@@ -18,6 +18,9 @@ spec:
     metadata:
       labels:
         {{- include "jasmin.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
@@ -25,6 +28,16 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      serviceAccountName: {{ include "jasmin.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.hostNetwork }}
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
@@ -98,7 +111,9 @@ spec:
                   name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.jcli.existingSecret }}
                   key: {{ default "jcli-password" .Values.credentials.jcli.existingSecretKey }}
             - name: START_EMBEDDED_INTERCEPTOR
-              value: {{ ternary "true" "false" .Values.interceptor.embedded | quote }}
+              value: {{ ternary "true" "false" (and .Values.interceptor.enabled .Values.interceptor.embedded) | quote }}
+            - name: ENABLE_INTERCEPTOR_CLIENT
+              value: {{ ternary "true" "false" .Values.interceptor.enabled | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -177,9 +192,9 @@ spec:
             - name: HTTP_API_URL
               value: "http://127.0.0.1:{{ .Values.service.ports.httpApi.targetPort }}"
             - name: RABBITMQ_HOST
-              value: {{ if .Values.rabbitmq.enabled }}{{ printf "%s-rabbitmq" (include "jasmin.fullname" .) | quote }}{{ else }}{{ .Values.externalRabbitMQ.host | quote }}{{ end }}
+              value: {{ include "jasmin.rabbitmqHost" . | quote }}
             - name: RABBITMQ_PORT
-              value: {{ if .Values.rabbitmq.enabled }}{{ .Values.rabbitmq.port | quote }}{{ else }}{{ .Values.externalRabbitMQ.port | quote }}{{ end }}
+              value: {{ include "jasmin.rabbitmqPort" . | quote }}
             - name: RABBITMQ_USER
               value: {{ .Values.credentials.rabbitmq.username | quote }}
             - name: RABBITMQ_PASS
@@ -201,11 +216,13 @@ spec:
                   name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.dashboard.admin.existingSecret }}
                   key: {{ .Values.dashboard.admin.existingSecretKey | default "dashboard-admin-password" }}
             {{- end }}
-            {{- with .Values.dashboard.publicUrl }}
+            {{- $consoleUrl := include "jasmin.consoleUrl" . }}
+            {{- with $consoleUrl }}
             - name: PUBLIC_URL
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.dashboard.trustProxy }}
+            {{- $trustProxy := .Values.dashboard.trustProxy | default (ternary "1" "" (or .Values.dashboard.ingress.enabled .Values.dashboard.httpRoute.enabled)) }}
+            {{- with $trustProxy }}
             - name: TRUST_PROXY
               value: {{ . | quote }}
             {{- end }}
@@ -321,5 +338,5 @@ spec:
         {{- end }}
         resources:
           requests:
-            storage: 2Gi
+            storage: {{ .Values.persistence.logsSize | default "2Gi" | quote }}
   {{- end }}

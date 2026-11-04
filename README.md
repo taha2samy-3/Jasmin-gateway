@@ -374,8 +374,16 @@ A web console for Jasmin, running as a sidecar next to `jasmind`. It talks to th
 4. Helm values:
 ```yaml
 dashboard:
-  publicUrl: https://jasmin-console.example.com
-  trustProxy: "1"                      # behind an ingress / gateway
+  ingress:                             # or dashboard.httpRoute (Gateway API)
+    enabled: true
+    className: nginx
+    host: jasmin-console.example.com   # the console needs its own hostname
+    tls:
+      - secretName: jasmin-console-tls
+        hosts: [jasmin-console.example.com]
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"   # WebSockets
+  # publicUrl and trustProxy are derived from the ingress host; set them only to override.
   admin:
     existingSecret: jasmin-console     # key: dashboard-admin-password (break-glass account)
   oidc:
@@ -386,6 +394,16 @@ dashboard:
     displayName: Microsoft
     roleMap: "admin=Jasmin.Admin,operator=Jasmin.Operator,viewer=Jasmin.Viewer"   # or "" for manual approval
 ```
+
+### Kubernetes notes
+* The pod runs under its own ServiceAccount with `automountServiceAccountToken: false`. Neither Jasmin nor the console calls the Kubernetes API, so the chart creates no Role or RoleBinding.
+* **Administrative ports stay private.** With `service.type: LoadBalancer` or `NodePort`, the public Service carries only SMPP (2775) and the HTTP API (1401). jCLI (8990, a plaintext admin console) and the console (3000) are reachable in-cluster through the `<release>-jasmin-admin` ClusterIP Service, or publicly only if you set `service.exposeAdminPorts: true`. With the default `ClusterIP` nothing changes.
+* The PB services used only inside the pod (router 8988, client manager 8989, SMPP server PB 14000, interceptor 8987) listen on `127.0.0.1`. The interceptor configuration is written to the `[interceptor]` section that `interceptord` actually reads (earlier versions wrote `[interceptor-pb]`, which was ignored).
+* `credentials.jcli.password` empty (default): a random password is generated and kept across `helm upgrade`. Set it, or `existingSecret`, when rendering without cluster access (Argo CD, Flux).
+* The image passes the configured jCLI credentials to `jasmind` (instead of the defaults in the image `CMD`), so it reloads the persisted configuration itself on start-up.
+* Prometheus alerts use the metrics Jasmin 0.11.1 actually exports (`smppc_*{cid}`, `httpapi_*`, `smppsapi_*`); they were verified in Prometheus against a running gateway (a down connector fires, a bound one does not).
+* Redis and RabbitMQ are not bundled: `redis.enabled` / `rabbitmq.enabled` must stay `false`; set `externalRedis` / `externalRabbitMQ`.
+* Console accounts and the audit log are stored in `console/` on the `store` volume, so they survive pod restarts together with Jasmin's configuration.
 
 ### Configuration (environment)
 | Variable | Default | Purpose |

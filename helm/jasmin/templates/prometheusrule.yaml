@@ -16,8 +16,13 @@ spec:
   groups:
     - name: {{ include "jasmin.fullname" . }}.alerts
       rules:
+        # Metric names below are the ones Jasmin 0.11.1 exports on <http-api>/metrics.
+        # smppc_* counters are per connector (label cid): currently connected = connected - disconnected.
+        # The increase() term avoids alerting on connectors that were deliberately stopped long ago.
         - alert: JasminSMPPConnectorDown
-          expr: jasmin_smppc_bound_count{namespace="{{ .Release.Namespace }}"} == 0
+          expr: |
+            (smppc_connected_count{namespace="{{ .Release.Namespace }}"} - smppc_disconnected_count{namespace="{{ .Release.Namespace }}"}) < 1
+            and increase(smppc_disconnected_count{namespace="{{ .Release.Namespace }}"}[15m]) > 0
           for: {{ .Values.monitoring.prometheusRule.rules.smppConnectorDown.for | default "1m" }}
           labels:
             severity: {{ .Values.monitoring.prometheusRule.rules.smppConnectorDown.severity | default "critical" }}
@@ -25,11 +30,23 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           annotations:
-            summary: "Jasmin SMPP upstream connector is disconnected"
-            description: "An SMPP connector in namespace {{ .Release.Namespace }} has 0 bound sessions for more than 1 minute."
+            summary: "Jasmin SMPP connector {{`{{ $labels.cid }}`}} is disconnected"
+            description: "SMPP client connector {{`{{ $labels.cid }}`}} in namespace {{ .Release.Namespace }} lost its connection and has not reconnected."
 
         - alert: JasminHighSubmitErrorRate
-          expr: rate(jasmin_http_api_send_errors_total{namespace="{{ .Release.Namespace }}"}[5m]) / (rate(jasmin_http_api_send_total{namespace="{{ .Release.Namespace }}"}[5m]) + 0.001) > {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.threshold | default "0.05" }}
+          # HTTP API submissions rejected for routing, throughput, charging or server errors
+          # (authentication failures are client mistakes and are excluded).
+          expr: |
+            (
+              sum by (namespace, pod) (
+                rate(httpapi_route_error_count{namespace="{{ .Release.Namespace }}"}[5m])
+                + rate(httpapi_throughput_error_count{namespace="{{ .Release.Namespace }}"}[5m])
+                + rate(httpapi_charging_error_count{namespace="{{ .Release.Namespace }}"}[5m])
+                + rate(httpapi_server_error_count{namespace="{{ .Release.Namespace }}"}[5m])
+              )
+              /
+              clamp_min(sum by (namespace, pod) (rate(httpapi_request_count{namespace="{{ .Release.Namespace }}"}[5m])), 0.001)
+            ) > {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.threshold | default "0.05" }}
           for: {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.for | default "2m" }}
           labels:
             severity: {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.severity | default "warning" }}
@@ -38,7 +55,24 @@ spec:
             {{- end }}
           annotations:
             summary: "Jasmin high message submit error rate"
-            description: "More than 5% of message submissions are failing in namespace {{ .Release.Namespace }}."
+            description: "More than {{ mulf (.Values.monitoring.prometheusRule.rules.highSubmitErrorRate.threshold | default "0.05" | float64) 100 }}% of HTTP API submissions are failing in namespace {{ .Release.Namespace }}."
+
+        - alert: JasminSMPPServerSubmitErrors
+          expr: |
+            (
+              sum by (namespace, pod) (rate(smppsapi_other_submit_error_count{namespace="{{ .Release.Namespace }}"}[5m]) + rate(smppsapi_throttling_error_count{namespace="{{ .Release.Namespace }}"}[5m]))
+              /
+              clamp_min(sum by (namespace, pod) (rate(smppsapi_submit_sm_request_count{namespace="{{ .Release.Namespace }}"}[5m])), 0.001)
+            ) > {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.threshold | default "0.05" }}
+          for: {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.for | default "2m" }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.severity | default "warning" }}
+            {{- with .Values.monitoring.prometheusRule.rules.highSubmitErrorRate.additionalLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "Jasmin SMPP server rejecting submissions"
+            description: "SMPP clients see a high rate of submit_sm errors or throttling in namespace {{ .Release.Namespace }}."
 
         - alert: JasminReactorHighCPU
           expr: rate(container_cpu_usage_seconds_total{container="{{ .Chart.Name }}",namespace="{{ .Release.Namespace }}"}[2m]) > 0.90

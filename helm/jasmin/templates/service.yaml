@@ -37,6 +37,8 @@ spec:
       {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.ports.httpApi.nodePort }}
       nodePort: {{ .Values.service.ports.httpApi.nodePort }}
       {{- end }}
+    {{- $adminOnPublic := or (eq .Values.service.type "ClusterIP") .Values.service.exposeAdminPorts }}
+    {{- if $adminOnPublic }}
     - name: jcli
       port: {{ .Values.service.ports.jcli.port }}
       targetPort: {{ .Values.service.ports.jcli.targetPort }}
@@ -59,6 +61,32 @@ spec:
       {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.dashboard.nodePort }}
       nodePort: {{ .Values.dashboard.nodePort }}
       {{- end }}
+    {{- end }}
+    {{- end }}
+  selector:
+    {{- include "jasmin.selectorLabels" . | nindent 4 }}
+---
+# In-cluster access to the administrative ports (jCLI and the console), whatever the
+# type of the public Service. Console Ingress/HTTPRoute objects point here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jasmin.fullname" . }}-admin
+  labels:
+    {{- include "jasmin.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  type: ClusterIP
+  ports:
+    - name: jcli
+      port: {{ .Values.service.ports.jcli.port }}
+      targetPort: {{ .Values.service.ports.jcli.targetPort }}
+      protocol: TCP
+    {{- if .Values.dashboard.enabled }}
+    - name: dashboard
+      port: {{ .Values.dashboard.port }}
+      targetPort: {{ .Values.dashboard.port }}
+      protocol: TCP
     {{- end }}
   selector:
     {{- include "jasmin.selectorLabels" . | nindent 4 }}

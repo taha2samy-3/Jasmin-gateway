@@ -16,6 +16,17 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
+# Pull secrets for private registries, e.g. [{name: ghcr-pull}]
+imagePullSecrets: []
+
+# Extra labels added to the pod
+podLabels: {}
+
+priorityClassName: ""
+
+# Time given to Jasmin to unbind SMPP sessions and flush queues before it is killed.
+terminationGracePeriodSeconds: 60
+
 nameOverride: ""
 fullnameOverride: ""
 
@@ -23,6 +34,9 @@ serviceAccount:
   create: true
   annotations: {}
   name: ""
+  # Jasmin and the console never call the Kubernetes API: keep the API token out of the pod.
+  # (No Role/RoleBinding is needed; set true only if a sidecar you add requires API access.)
+  automountToken: false
 
 podAnnotations:
   prometheus.io/scrape: "true"
@@ -82,6 +96,11 @@ service:
   loadBalancerIP: ""
   loadBalancerSourceRanges: []
   annotations: {}
+  # Administrative ports (jCLI 8990, interceptor PB 8987, console 3000) are only added to this
+  # Service when it is ClusterIP. With LoadBalancer/NodePort they stay internal unless this is
+  # true: jCLI is a plaintext admin console and must never face the internet.
+  # They are always reachable in-cluster through the "<release>-jasmin-admin" ClusterIP Service.
+  exposeAdminPorts: false
   ports:
     smpp:
       port: 2775
@@ -126,7 +145,25 @@ dashboard:
   # Required for single sign-on: the OIDC redirect URI is <publicUrl>/auth/oidc/callback.
   publicUrl: ""
   # Set when the console is behind a reverse proxy / ingress (Express "trust proxy"), e.g. "1".
+  # Defaults to "1" when dashboard.httpRoute or dashboard.ingress is enabled.
   trustProxy: ""
+
+  # Expose the console on its own hostname (it serves from "/", not from a sub-path).
+  # WebSockets (/ws/*) are used for live data and the jCLI console: make sure the gateway or
+  # ingress controller allows long-lived connections (e.g. nginx proxy-read-timeout).
+  httpRoute:
+    enabled: false
+    parentRefs: []   # defaults to httpRoute.parentRefs
+    hostnames: []    # e.g. ["jasmin-console.example.com"]
+    annotations: {}
+  ingress:
+    enabled: false
+    className: ""
+    host: ""         # e.g. jasmin-console.example.com
+    annotations: {}
+    #  nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    #  nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    tls: []
 
   # Initial administrator, created on first start when no active admin exists.
   # Leave password empty to generate one: it is printed once in the dashboard container log.
@@ -229,12 +266,7 @@ httpRoute:
       path: /metrics
       pathType: PathPrefix
       methods: [GET]
-    dashboard:
-      enabled: false  # Expose Enterprise Web Dashboard through HTTPRoute
-      path: /dashboard
-      pathType: PathPrefix
-      methods: [GET, POST]
-      port: 3000
+    # The console is exposed on its own hostname: see dashboard.httpRoute / dashboard.ingress.
 
   # Option 2: Full custom rules array (overrides endpoints if specified)
   rules: []
@@ -253,13 +285,16 @@ persistence:
   storageClass: ""
   accessMode: ReadWriteOnce
   size: 5Gi
+  logsSize: 2Gi
   annotations: {}
 
 # Authentication Credentials
 credentials:
   jcli:
+    # Single source for the jCLI admin account (used by Jasmin, the bootstrap job and the console).
     username: "jcliadmin"
-    password: "secretpassword"
+    # Empty: a random password is generated once and kept across upgrades.
+    password: ""
     existingSecret: ""
     existingSecretKey: "jcli-password"
   rabbitmq:
@@ -273,7 +308,8 @@ credentials:
     existingSecret: ""
     existingSecretKey: "redis-password"
 
-# Redis Integration
+# Redis / RabbitMQ are not bundled with this chart: point Jasmin at your own services.
+# (Setting redis.enabled / rabbitmq.enabled to true fails the install with a clear message.)
 redis:
   enabled: false
   port: 6379
@@ -311,20 +347,22 @@ config:
     pduReadTimerSecs: 10
 
   # [smpp-server-pb]
+  # The PB services below are only used by jCLI and interceptord inside the pod and have no
+  # (or weak) authentication: they listen on localhost so other pods cannot reach them.
   smppServerPb:
-    bind: "0.0.0.0"
+    bind: "127.0.0.1"
     port: 14000
     authentication: false
 
   # [client-management]
   clientManagement:
-    bind: "0.0.0.0"
+    bind: "127.0.0.1"
     port: 8989
     storePath: "/etc/jasmin/store"
 
   # [router]
   router:
-    bind: "0.0.0.0"
+    bind: "127.0.0.1"
     port: 8988
     storePath: "/etc/jasmin/store"
 
@@ -335,13 +373,11 @@ config:
     showJasminVersion: true
 
   # [jcli]
+  # Credentials come from credentials.jcli (one place for Jasmin, bootstrap and console).
   jcli:
     bind: "0.0.0.0"
     port: 8990
     authentication: true
-    adminUsername: "jcliadmin"
-    # Plaintext or pre-hashed MD5 password (if plaintext, configure.py auto-hashes it on startup)
-    adminPassword: "secretpassword"
 
   # [redis-client]
   redisClient:
@@ -375,10 +411,13 @@ config:
     maxRetries: 2
 
   # [interceptor-pb]
+  # Interceptors execute Python code: keep the PB endpoint private to the pod.
   interceptorPb:
-    bind: "0.0.0.0"
+    bind: "127.0.0.1"
     port: 8987
-    authentication: false
+    # Authentication uses Jasmin's default interceptor credentials, which jasmind's
+    # interceptor client also uses; keep it on.
+    authentication: true
 
   # Raw extra INI directives to append to jasmin.cfg
   extraConfig: ""
@@ -416,7 +455,9 @@ jasminRoutes:
 
 # Interceptor Options
 interceptor:
+  # Connect jasmind to the interceptor (--enable-interceptor-client).
   enabled: true
+  # Run interceptord inside the Jasmin container.
   embedded: true
 
 # Monitoring & Alerting

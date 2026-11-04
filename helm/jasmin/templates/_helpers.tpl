@@ -64,7 +64,7 @@ Resolve Redis Host
 */}}
 {{- define "jasmin.redisHost" -}}
 {{- if .Values.redis.enabled }}
-{{- printf "%s-redis-master" .Release.Name }}
+{{- fail "redis.enabled: this chart does not bundle Redis. Set redis.enabled=false and externalRedis.host/port." }}
 {{- else }}
 {{- .Values.externalRedis.host }}
 {{- end }}
@@ -86,7 +86,7 @@ Resolve RabbitMQ Host
 */}}
 {{- define "jasmin.rabbitmqHost" -}}
 {{- if .Values.rabbitmq.enabled }}
-{{- printf "%s-rabbitmq" .Release.Name }}
+{{- fail "rabbitmq.enabled: this chart does not bundle RabbitMQ. Set rabbitmq.enabled=false and externalRabbitMQ.host/port." }}
 {{- else }}
 {{- .Values.externalRabbitMQ.host }}
 {{- end }}
@@ -103,3 +103,17 @@ Resolve RabbitMQ Port
 {{- end }}
 {{- end }}
 
+
+{{/*
+External URL of the Jasmin Console: dashboard.publicUrl, else derived from the console
+Ingress host (https when TLS is configured) or the first console HTTPRoute hostname.
+*/}}
+{{- define "jasmin.consoleUrl" -}}
+{{- if .Values.dashboard.publicUrl -}}
+{{- .Values.dashboard.publicUrl -}}
+{{- else if and .Values.dashboard.ingress.enabled .Values.dashboard.ingress.host -}}
+{{- printf "%s://%s" (ternary "https" "http" (gt (len .Values.dashboard.ingress.tls) 0)) .Values.dashboard.ingress.host -}}
+{{- else if and .Values.dashboard.httpRoute.enabled .Values.dashboard.httpRoute.hostnames -}}
+{{- printf "https://%s" (first .Values.dashboard.httpRoute.hostnames) -}}
+{{- end -}}
+{{- end -}}

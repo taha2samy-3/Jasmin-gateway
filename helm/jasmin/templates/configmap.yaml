@@ -49,7 +49,7 @@ data:
     bind = {{ .Values.config.jcli.bind | default "0.0.0.0" }}
     port = {{ .Values.config.jcli.port | default .Values.service.ports.jcli.targetPort }}
     authentication = {{ ternary "True" "False" .Values.config.jcli.authentication }}
-    admin_username = {{ .Values.config.jcli.adminUsername | default .Values.credentials.jcli.username }}
+    admin_username = {{ .Values.credentials.jcli.username }}
     log_level = {{ .Values.config.logLevel | default "INFO" }}
 
     [redis-client]
@@ -91,8 +91,9 @@ data:
 {{- if .Values.config.customInterceptorCfg }}
 {{ .Values.config.customInterceptorCfg | indent 4 }}
 {{- else }}
-    [interceptor-pb]
-    bind = {{ .Values.config.interceptorPb.bind | default "0.0.0.0" }}
+    # interceptord reads the [interceptor] section (a section named [interceptor-pb] is ignored).
+    [interceptor]
+    bind = {{ .Values.config.interceptorPb.bind | default "127.0.0.1" }}
     port = {{ .Values.config.interceptorPb.port | default .Values.service.ports.interceptor.targetPort }}
     authentication = {{ ternary "True" "False" .Values.config.interceptorPb.authentication }}
     log_level = {{ .Values.config.logLevel | default "INFO" }}
