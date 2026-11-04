@@ -55,3 +55,6 @@ ehthumbs.db
 *.swp
 *.swo
 *~
+
+# Jasmin Console local data (accounts, audit log)
+gui/data/

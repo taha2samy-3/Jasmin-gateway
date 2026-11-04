@@ -189,6 +189,51 @@ spec:
                   key: {{ default "rabbitmq-password" .Values.credentials.rabbitmq.existingSecretKey }}
             - name: RABBITMQ_VHOST
               value: {{ .Values.credentials.rabbitmq.vhost | quote }}
+            # Created by the console itself (as its own user) inside the store volume.
+            - name: DATA_DIR
+              value: "/data/console"
+            - name: ADMIN_USERNAME
+              value: {{ .Values.dashboard.admin.username | quote }}
+            {{- if or .Values.dashboard.admin.password .Values.dashboard.admin.existingSecret }}
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.dashboard.admin.existingSecret }}
+                  key: {{ .Values.dashboard.admin.existingSecretKey | default "dashboard-admin-password" }}
+            {{- end }}
+            {{- with .Values.dashboard.publicUrl }}
+            - name: PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.dashboard.trustProxy }}
+            - name: TRUST_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SESSION_IDLE_MINUTES
+              value: {{ .Values.dashboard.session.idleMinutes | quote }}
+            - name: SESSION_MAX_HOURS
+              value: {{ .Values.dashboard.session.maxHours | quote }}
+            {{- if .Values.dashboard.oidc.enabled }}
+            - name: OIDC_ISSUER_URL
+              value: {{ required "dashboard.oidc.issuerUrl is required when dashboard.oidc.enabled" .Values.dashboard.oidc.issuerUrl | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ required "dashboard.oidc.clientId is required when dashboard.oidc.enabled" .Values.dashboard.oidc.clientId | quote }}
+            {{- if or .Values.dashboard.oidc.clientSecret .Values.dashboard.oidc.existingSecret }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.dashboard.oidc.existingSecret }}
+                  key: {{ .Values.dashboard.oidc.existingSecretKey | default "oidc-client-secret" }}
+            {{- end }}
+            - name: OIDC_DISPLAY_NAME
+              value: {{ .Values.dashboard.oidc.displayName | quote }}
+            - name: OIDC_SCOPES
+              value: {{ .Values.dashboard.oidc.scopes | quote }}
+            - name: OIDC_ROLE_CLAIM
+              value: {{ .Values.dashboard.oidc.roleClaim | quote }}
+            - name: OIDC_ROLE_MAP
+              value: {{ .Values.dashboard.oidc.roleMap | quote }}
+            {{- end }}
           volumeMounts:
             - name: config-volume
               mountPath: /etc/jasmin/jasmin.cfg
@@ -197,9 +242,13 @@ spec:
             - name: logs
               mountPath: /var/log/jasmin
               readOnly: true
+            # Console accounts and audit log, kept on the persistent store volume.
+            # (No subPath: kubelet-created subPath directories are owned by root.)
+            - name: store
+              mountPath: /data
           livenessProbe:
             httpGet:
-              path: /api/overview
+              path: /healthz
               port: dashboard
             initialDelaySeconds: 15
             periodSeconds: 15
@@ -207,7 +256,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /api/overview
+              path: /healthz
               port: dashboard
             initialDelaySeconds: 5
             periodSeconds: 10

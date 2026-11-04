@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Jasmin">
+  <title>Jasmin</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1497d4"/>
+      <stop offset="1" stop-color="#03689a"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <g transform="translate(128 128) scale(3.05)">
+    <g fill="#ffffff">
+      <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2"/>
+      <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2" transform="rotate(72)"/>
+      <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2" transform="rotate(144)"/>
+      <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2" transform="rotate(216)"/>
+      <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2" transform="rotate(288)"/>
+    </g>
+    <g fill="none" stroke="#0480bc" stroke-width="1.4" stroke-linecap="round" opacity=".28">
+      <path d="M0 -6V-21"/><path d="M0 -6V-21" transform="rotate(72)"/><path d="M0 -6V-21" transform="rotate(144)"/>
+      <path d="M0 -6V-21" transform="rotate(216)"/><path d="M0 -6V-21" transform="rotate(288)"/>
+    </g>
+    <circle r="5.2" fill="#0480bc"/>
+    <circle r="2.4" fill="#f2c94c"/>
+  </g>
+</svg>

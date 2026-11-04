@@ -64,6 +64,11 @@ def update_jasmin_config(config_file):
     parser.set("http-api", "bind", os.getenv("HTTP_API_BIND", "0.0.0.0"))
     set_val("http-api", "port", "HTTP_API_PORT")
 
+    # [sm-listener]
+    # publish_submit_sm_resp publishes carrier responses on submit.sm.resp.<cid>; the console's
+    # live traffic view needs it to show acceptance and latency.
+    set_val("sm-listener", "publish_submit_sm_resp", "SM_LISTENER_PUBLISH_SUBMIT_SM_RESP", "PUBLISH_SUBMIT_SM_RESP")
+
     # [interceptor-client]
     set_val("interceptor-client", "host", "INTERCEPTOR_HOST")
     set_val("interceptor-client", "port", "INTERCEPTOR_PORT")

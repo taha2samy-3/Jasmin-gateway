@@ -2,7 +2,7 @@ apiVersion: v2
 name: jasmin
 description: An unofficial production-ready Helm chart for Jasmin SMS Gateway on Kubernetes
 type: application
-version: 0.3.0
+version: 0.4.0
 appVersion: "0.11.1"
 keywords:
   - sms
@@ -12,7 +12,7 @@ keywords:
   - messaging
   - telecommunications
 home: https://www.jasminsms.com
-icon: https://raw.githubusercontent.com/jookies/jasmin/master/misc/doc/sources/_static/jasmin-logo-small.png
+icon: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/public/assets/icon-256.png
 sources:
   - https://github.com/taha2samy-3/Jasmin-gateway
   - https://github.com/jookies/jasmin
@@ -32,7 +32,13 @@ annotations:
     - name: Upstream
       url: https://github.com/jookies/jasmin
   artifacthub.io/screenshots: |
-    - title: Jasmin Enterprise Management Dashboard
-      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/public/assets/dashboard-preview.png
-    - title: Official Jasmin SMS Gateway Architecture & Logo
-      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/public/assets/logo.png
+    - title: Jasmin Console overview with live throughput
+      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/screenshots/03-overview.png
+    - title: Visual MT routing flow editor
+      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/screenshots/05-flow-editor.png
+    - title: Deployment review before changes reach Jasmin
+      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/screenshots/06-flow-deploy-review.png
+    - title: Live traffic from the RabbitMQ tap
+      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/screenshots/04-live-traffic.png
+    - title: Access control with single sign-on approval
+      url: https://raw.githubusercontent.com/taha2samy-3/Jasmin-gateway/main/gui/screenshots/13-access-approval.png

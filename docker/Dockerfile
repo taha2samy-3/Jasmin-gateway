@@ -11,6 +11,20 @@ RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip "setuptools<82" wheel && \
     /opt/venv/bin/pip install --no-cache-dir "jasmin==${JASMIN_VERSION}" prometheus-client
 
+# Backport of the upstream fix (jookies/jasmin master, unreleased as of 0.11.1):
+# submit_sm_resp_event() reads `_pdu.response`, but for single-part messages `_pdu` is the
+# SubmitSM request, which has no `.response`. Every ESME_ROK response then raises
+# AttributeError, so the DLR is never handed to DLRLookup, submit_sm_resp billing is skipped
+# and submit.sm.resp.* is never published. Patched only when the buggy code is present.
+RUN LISTENERS="$(/opt/venv/bin/python -c 'import importlib.util as u; print(u.find_spec("jasmin.managers.listeners").origin)')" && \
+    if grep -q '_pdu\.response\.' "$LISTENERS"; then \
+      sed -i 's/_pdu\.response\./r.response./g' "$LISTENERS" && \
+      ! grep -q '_pdu\.response\.' "$LISTENERS" && \
+      echo "Patched submit_sm_resp DLR handling in $LISTENERS"; \
+    else \
+      echo "submit_sm_resp DLR handling already fixed upstream; no patch needed"; \
+    fi
+
 # Runtime Stage: Minimal hardened Wolfi Python image (No Alpine, stripped binaries)
 FROM ghcr.io/taha2samy-3/python:3.12 AS runner
 

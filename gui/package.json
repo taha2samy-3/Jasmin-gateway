@@ -1,6 +1,6 @@
 {
   "name": "jasmin-enterprise-gui",
-  "version": "1.0.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Enterprise Web Management Dashboard for Jasmin SMS Gateway",
   "main": "dist/server.js",
@@ -11,9 +11,13 @@
     "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "amqplib": "^2.2.1",
+    "chart.js": "^4.4.1",
     "express": "^4.19.2",
     "ioredis": "^5.4.1",
+    "openid-client": "^5.7.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

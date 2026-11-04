@@ -15,9 +15,24 @@ if [ -n "$JCLI_ADMIN_PASSWORD" ]; then
     fi
 fi
 
-# Dynamically update configuration from environment variables if configure.py is present
-if [ -f "/usr/local/bin/configure.py" ] && [ -f "${CONFIG_PATH}/jasmin.cfg" ]; then
-    python /usr/local/bin/configure.py "${CONFIG_PATH}/jasmin.cfg"
+# Dynamically update configuration from environment variables if configure.py is present.
+# In Kubernetes jasmin.cfg is usually a read-only ConfigMap mount: in that case the merged
+# configuration is written to a writable runtime copy and jasmind is started with -c <copy>.
+JASMIN_CFG="${CONFIG_PATH}/jasmin.cfg"
+USE_RUNTIME_CFG=0
+if [ -f "/usr/local/bin/configure.py" ] && [ -f "${JASMIN_CFG}" ]; then
+    if [ -w "${JASMIN_CFG}" ]; then
+        python /usr/local/bin/configure.py "${JASMIN_CFG}"
+    else
+        RUNTIME_DIR="${JASMIN_RUNTIME_DIR:-/tmp/jasmin-runtime}"
+        mkdir -p "${RUNTIME_DIR}"
+        cp "${JASMIN_CFG}" "${RUNTIME_DIR}/jasmin.cfg"
+        chmod 600 "${RUNTIME_DIR}/jasmin.cfg"
+        python /usr/local/bin/configure.py "${RUNTIME_DIR}/jasmin.cfg"
+        JASMIN_CFG="${RUNTIME_DIR}/jasmin.cfg"
+        USE_RUNTIME_CFG=1
+        echo "[INFO] ${CONFIG_PATH}/jasmin.cfg is read-only; using ${JASMIN_CFG}"
+    fi
 fi
 
 # Clean up lock files from previous unclean shutdowns
@@ -44,5 +59,14 @@ case " $* " in
         ;;
 esac
 
-echo "[INFO] Starting command: $@"
+# Point jasmind at the runtime copy unless the caller passed its own -c/--config.
+if [ "${USE_RUNTIME_CFG}" = "1" ] && [ "$(basename "$1")" = "jasmind.py" ]; then
+    case " $* " in
+        *" -c "*|*" --config"*) ;;
+        *) cmd="$1"; shift; set -- "$cmd" -c "${JASMIN_CFG}" "$@" ;;
+    esac
+fi
+
+# Log the command without the jCLI password argument.
+echo "[INFO] Starting command: $(echo "$@" | sed -E 's/(-p|--password)( |=)[^ ]+/\1\2******/')"
 exec "$@"

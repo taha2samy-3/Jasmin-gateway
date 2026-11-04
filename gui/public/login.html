@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in · Jasmin Console</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/icon.svg" />
+    <link rel="stylesheet" href="/css/app.css" />
+    <script>
+      try {
+        const t = localStorage.getItem('jc-theme');
+        if (t) document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+    <style>
+      body { display: grid; place-items: center; min-height: 100vh; padding: 24px;
+        background: radial-gradient(1200px 600px at 10% -10%, rgba(4,128,188,.18), transparent 60%), var(--bg); }
+      .login { width: min(400px, 100%); }
+      .login .card { padding: 28px; box-shadow: var(--shadow); }
+      .login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+      .login-brand img { width: 40px; height: 40px; }
+      .login h1 { font-size: 19px; }
+      .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 16px 0; }
+      .or::before, .or::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+      .btn.block { width: 100%; height: 38px; }
+      .foot { text-align: center; color: var(--muted); font-size: 12px; margin-top: 16px; }
+      .pending { text-align: center; }
+      .pending .icon { width: 36px; height: 36px; color: var(--warn); margin-bottom: 10px; }
+    </style>
+  </head>
+  <body>
+    <main class="login">
+      <div class="card" id="card"></div>
+      <p class="foot">Jasmin Console · unofficial community distribution</p>
+    </main>
+    <script type="module" src="/js/login.js"></script>
+  </body>
+</html>

@@ -45,6 +45,12 @@ While an official Dockerfile exists in upstream `jookies/jasmin`, it crashes whe
    - Automatically defaults `jcli`, `smpp-server`, and `http-api` to bind to `0.0.0.0` instead of `127.0.0.1` so that Kubernetes services can route traffic to them.
 5. **Memory Optimization:**
    - Preloads `libjemalloc2` (`LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2`) to prevent memory fragmentation under high load.
+6. **Delivery receipts broken in Jasmin 0.11.x (`submit_sm_resp`):**
+   - In the released code, `submit_sm_resp_event()` reads `_pdu.response`, but for single-part messages `_pdu` is the `SubmitSM` request, which has no `.response`. Every `ESME_ROK` response raises `AttributeError`, so the DLR is never handed to DLRLookup, `submit_sm_resp` billing is skipped and `submit.sm.resp.*` is never published. The image backports the upstream fix (jookies/jasmin `master`, not in any release yet), and the build only patches when the buggy code is present.
+7. **Read-only `jasmin.cfg` (Kubernetes ConfigMap):**
+   - `configure.py` used to rewrite `/etc/jasmin/jasmin.cfg` in place, which crashes on a read-only ConfigMap mount. When the file is read-only, the entrypoint now writes the merged configuration to `/tmp/jasmin-runtime/jasmin.cfg` and starts `jasmind -c <copy>`.
+8. **`publish_submit_sm_resp`:**
+   - Configurable through `SM_LISTENER_PUBLISH_SUBMIT_SM_RESP` (and `config.smListener.publishSubmitSmResp` in Helm, default `true`) so carrier responses are published for the console's live traffic view.
 
 ---
 
@@ -289,6 +295,14 @@ monitoring:
 
 ## 8. Verification Proof
 
+- **End-to-end test (2026-11-04)** against the image built from `docker/Dockerfile` (Jasmin 0.11.1) with Redis and RabbitMQ, and the console container in the same pod:
+  - jCLI output parsed from real responses; users, groups, connectors, filters, MT/MO routes created through the console and verified with `jcli` in a new session.
+  - Real SMS through the HTTP API: `SUBMITTED` → `ESME_ROK` with latency in the live view; after the `submit_sm_resp` backport `dlr.submit_sm_resp` is published and no `AttributeError` is logged.
+  - Flow editor: wiring, validation, deploy review, deploy, and a message routed by the newly deployed route.
+  - Single sign-on with a local OpenID Connect provider: pending → approved → role change → disabled; role mapping from the `roles` claim; RP-initiated logout.
+  - The chart rendered with `helm template` and run with `podman kube play`: Jasmin starts with the read-only ConfigMap, the console signs in with the Secret-provided admin and keeps its data on the store volume.
+
+
 - **Live jCLI Login & Route Provisioning Test:**
   Ran a live test stack with `redis`, `rabbitmq`, and `jasmin:local`. Verified automated bootstrap and Telnet console:
   ```
@@ -312,34 +326,89 @@ monitoring:
 
 ---
 
-## 9. Enterprise Web Management Dashboard (`gui/`)
+## 9. Jasmin Console (`gui/`)
 
-A high-performance, zero-auth Node.js (TypeScript) Web Management Console connecting directly to Jasmin Gateway on `127.0.0.1:8990`, `127.0.0.1:1401`, and RabbitMQ on `5672`.
+A web console for Jasmin, running as a sidecar next to `jasmind`. It talks to the real gateway through jCLI (`127.0.0.1:8990`), the HTTP API (`:1401`) and a read-only tap on RabbitMQ. It ships no demo data: everything on screen comes from the gateway.
 
-### Core Capabilities:
-1. **Live AMQP Traffic & DLR Monitor:** Native AMQP 0-9-1 tap into exchange `messaging` (`submit.sm.*`, `submit.sm.resp.*`, `dlr_thrower.*`). Provides an in-memory ring buffer (up to 10,000 messages) with instant full-text search, status filtering (`SUBMITTED`, `ESME_ROK`, `DELIVRD`, `UNDELIV`), auto-scroll, and CSV export.
-2. **Deep PDU Inspector:** One-click inspection of decoded SMPP PDU payloads (Source/Dest TON/NPI, Data Coding, Priority, Route CID, SMSC Delivery Receipt, and round-trip latency).
-3. **Interactive jCLI Web Terminal (xterm.js):** Direct full-duplex interactive terminal in the browser connected via WebSocket to port `8990` with ANSI styling, autocomplete, and command history.
-4. **Interactive Route Match Simulator:** Test any combination of User UID, Sender ID, Recipient Phone, and Message Content against active filters and MT routes to visualize exact routing resolution.
-5. **Visual Filter Studio with Live Regex Testing:** Configure all 11 Jasmin filter types with an interactive real-time regex validator before saving.
-6. **Gateway State Snapshot & Portability:** One-click JSON backup/export of all users, groups, connectors, filters, and routes, with instant restore.
-7. **NOC Cockpit (Overview):** Live real-time throughput chart (TPS), system status badges, and Twisted core telemetry.
-8. **User & Account Management:** Full CRUD for ESME clients, password generation, balance credits, and throughput limits.
-9. **SMPP & HTTP Connectors:** Configure and monitor upstream carrier binds and HTTP webhooks.
-10. **Persistence Safeguard:** One-click **Save Config** button triggering `persist` on Jasmin.
+![Overview](gui/screenshots/03-overview.png)
 
-### Running the Dashboard:
-```bash
-cd gui
-npm install
-npm run build
-npm start # Starts web server on http://localhost:3000
+### What it does
+* **Overview:** HTTP API and SMPP server counters, carrier link health, live throughput and the MT routing pipeline at a glance.
+* **Live traffic:** every MT message from RabbitMQ (`submit.sm.*`, `submit.sm.resp.*`, `dlr_thrower.*`) with carrier acceptance, latency, decoded PDU, search, status filters and CSV export. Pickles are decoded safely (no code execution), including UCS-2 / Arabic content.
+* **Flow editor:** a node-based editor for MT routing: drag filters, routes and connectors from the palette, wire them, double-click to edit. Rules from Jasmin are checked while you edit (order 0 is the default route, Static routes have one connector, routes need filters, MT routes only use `smppc(...)`). **Deploy** shows the exact jCLI changes first, then applies them in one session and persists. Loading a flow and deploying it unchanged makes zero changes. Live messages animate along the wires into the connector that carried them.
+* **Routing & filters:** MT/MO routes and filters as tables; create and delete with the same validation.
+* **Users & groups, Connectors:** create, edit quotas and balance, start/stop carrier links, with guards for operations jCLI would silently get wrong (re-using a UID overwrites the user; deleting a connector still used by routes).
+* **Route simulator:** shows which route and connector Jasmin would pick for a message and why, filter by filter (regex filters are anchored like Python `re.match`).
+* **Send test SMS:** submits through the HTTP API and follows the message live.
+* **jCLI console:** a full terminal (xterm.js, JetBrains Mono Nerd Font) with a command reference, session info, copy, font size and fullscreen. Commands are written to the audit log with passwords masked.
+* **Access & audit:** sign-in, roles, approval of new single sign-on users and an audit log of sign-ins, account changes, gateway changes and console commands.
+
+| | |
+|---|---|
+| ![Flow editor](gui/screenshots/05-flow-editor.png) | ![Deploy review](gui/screenshots/06-flow-deploy-review.png) |
+| ![Live traffic](gui/screenshots/04-live-traffic.png) | ![Route simulator](gui/screenshots/08-route-simulator.png) |
+| ![Routing](gui/screenshots/07-routing.png) | ![Connectors](gui/screenshots/09-connectors.png) |
+| ![Users](gui/screenshots/10-users.png) | ![Send test SMS](gui/screenshots/11-send-test-sms.png) |
+| ![jCLI console](gui/screenshots/12-jcli-console.png) | ![Configuration](gui/screenshots/15-configuration.png) |
+| ![Access and approval](gui/screenshots/13-access-approval.png) | ![Audit log](gui/screenshots/14-audit-log.png) |
+| ![Sign in](gui/screenshots/01-sign-in.png) | ![Waiting for approval](gui/screenshots/02-sso-pending.png) |
+| ![Overview, light theme](gui/screenshots/16-overview-light.png) | ![Flow editor, light theme](gui/screenshots/17-flow-editor-light.png) |
+
+### Sign-in and roles
+* **Initial administrator:** created on first start when no active admin exists, from `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Without a password one is generated and printed once in the log, and must be changed at first sign-in.
+* **Single sign-on (OpenID Connect):** Authorization Code flow with PKCE, `state` and `nonce`. A user signing in for the first time is **pending** until an administrator approves the account with a role. Alternatively, roles can come from the token (`OIDC_ROLE_MAP`, e.g. Entra ID app roles).
+* **Roles:**
+
+| Role | Can |
+|---|---|
+| `admin` | everything, including console accounts and the audit log |
+| `operator` | change gateway configuration, deploy flows, jCLI console, send test SMS |
+| `viewer` | read-only monitoring; message content is masked |
+
+* **Session security:** HttpOnly SameSite cookies, CSRF header and Origin checks on every change and WebSocket, scrypt password hashes, login rate limiting, sessions revoked on disable or password change.
+
+### Microsoft Entra ID setup
+1. Entra admin center → **App registrations** → **New registration**. Redirect URI (Web): `https://<console-host>/auth/oidc/callback`.
+2. **Certificates & secrets** → new client secret.
+3. Optional, to skip manual approval: **App roles** → create `Jasmin.Admin`, `Jasmin.Operator`, `Jasmin.Viewer`, then assign users or groups in **Enterprise applications**.
+4. Helm values:
+```yaml
+dashboard:
+  publicUrl: https://jasmin-console.example.com
+  trustProxy: "1"                      # behind an ingress / gateway
+  admin:
+    existingSecret: jasmin-console     # key: dashboard-admin-password (break-glass account)
+  oidc:
+    enabled: true
+    issuerUrl: https://login.microsoftonline.com/<tenant-id>/v2.0
+    clientId: <application-client-id>
+    existingSecret: jasmin-console     # key: oidc-client-secret
+    displayName: Microsoft
+    roleMap: "admin=Jasmin.Admin,operator=Jasmin.Operator,viewer=Jasmin.Viewer"   # or "" for manual approval
 ```
 
-### Verified Screenshots:
-Saved in [`gui/screenshots/`](file:///home/taha/Desktop/jasmain/gui/screenshots/):
-- `01_noc_cockpit.png`: NOC Cockpit and live throughput chart.
-- `02_users_accounts.png`: ESME user management table and balances.
-- `03_connectors.png`: HTTP Webhook connectors.
-- `04_routing_engine.png`: MO Routing Engine table.
-- `05_sms_sandbox.png`: SMS Dispatch Sandbox console.
+### Configuration (environment)
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP port |
+| `JCLI_HOST` / `JCLI_PORT` / `JCLI_ADMIN_USERNAME` / `JCLI_ADMIN_PASSWORD` | `127.0.0.1` / `8990` / `jcliadmin` | jCLI access |
+| `HTTP_API_URL` | `http://127.0.0.1:1401` | Jasmin HTTP API (test SMS) |
+| `RABBITMQ_HOST` / `_PORT` / `_USER` / `_PASS` / `_VHOST` | from `jasmin.cfg` | traffic tap |
+| `DATA_DIR` | `./data` (`/data` in the image) | console accounts and audit log |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / generated | initial administrator |
+| `PUBLIC_URL`, `TRUST_PROXY` | | external URL (OIDC redirect), reverse proxy |
+| `SESSION_IDLE_MINUTES` / `SESSION_MAX_HOURS` | `60` / `12` | session lifetime |
+| `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_DISPLAY_NAME`, `OIDC_SCOPES`, `OIDC_ROLE_CLAIM`, `OIDC_ROLE_MAP` | | single sign-on |
+
+### Running locally
+```bash
+cd gui
+npm ci
+ADMIN_PASSWORD='choose-a-strong-one' JCLI_PORT=8990 npm run dev   # http://localhost:3000
+npm test        # 57 tests, including replays of real Jasmin 0.11.1 jCLI output and AMQP pickles
+```
+
+### Notes on Jasmin behaviour the console relies on
+* jCLI keeps filters and HTTP connectors **per session** until `persist`. The console therefore makes every change in a fresh session followed by `persist`, and reads through a session that is recycled regularly. Changes made in another jCLI session appear here once that session persists them.
+* MT routes keep their own copy of each filter. Editing a filter in the flow editor re-saves every route that uses it.
+* Saving an MT route with an existing order replaces it atomically.

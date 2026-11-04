@@ -20,11 +20,18 @@ export interface JasminHttpConnector {
 
 export interface JasminSmppConnector {
   cid: string;
+  /** Service state from `smppccm -l`: "started" | "stopped". */
+  service: string;
+  /** SMPP session state, e.g. "BOUND_TRX", "NONE". */
+  session: string;
+  starts: number;
+  stops: number;
   connectedAt: string;
   boundAt: string;
   disconnectedAt: string;
-  submits: number;
-  delivers: number;
+  /** Counters from `stats --smppcs` (raw jCLI text, e.g. "12/12"). */
+  submits: string;
+  delivers: string;
   qosErrors: number;
   otherErrors: number;
 }
@@ -32,7 +39,9 @@ export interface JasminSmppConnector {
 export interface JasminMoRoute {
   order: number;
   type: string;
+  /** Typed connectors joined with ';' e.g. "http(crm)" */
   connector: string;
+  connectors: string[];
   filters: string[];
 }
 
@@ -40,7 +49,9 @@ export interface JasminMtRoute {
   order: number;
   type: string;
   rate: number;
+  /** Typed connectors joined with ';' e.g. "smppc(a);smppc(b)" */
   connector: string;
+  connectors: string[];
   filters: string[];
 }
 
@@ -75,6 +86,9 @@ export interface JasminFilter {
   type: string;
   routes: string;
   description: string;
+  /** Parameter key and value extracted from the description, e.g. dst_addr / ^2010 */
+  paramKey: string;
+  value: string;
 }
 
 export interface JasminInterceptor {

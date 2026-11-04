@@ -48,6 +48,22 @@ port = 8990
             del os.environ["AMQP_HOST"]
             del os.environ["JCLI_ADMIN_PASSWORD"]
 
+    def test_publish_submit_sm_resp_from_env(self):
+        os.environ["SM_LISTENER_PUBLISH_SUBMIT_SM_RESP"] = "True"
+        try:
+            update_jasmin_config(self.tmp.name)
+            with open(self.tmp.name, "r") as f:
+                content = f.read()
+            self.assertIn("[sm-listener]", content)
+            self.assertIn("publish_submit_sm_resp = True", content)
+        finally:
+            del os.environ["SM_LISTENER_PUBLISH_SUBMIT_SM_RESP"]
+
+    def test_publish_submit_sm_resp_untouched_without_env(self):
+        update_jasmin_config(self.tmp.name)
+        with open(self.tmp.name, "r") as f:
+            self.assertNotIn("publish_submit_sm_resp", f.read())
+
 if __name__ == "__main__":
     unittest.main()
 

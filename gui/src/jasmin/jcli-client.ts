@@ -17,172 +17,327 @@ export interface JCliConfig {
   port: number;
   username: string;
   password?: string;
+  /** Per-command timeout in ms (default 6000). */
+  commandTimeoutMs?: number;
+  /** TCP connect + login timeout in ms (default 8000). */
+  connectTimeoutMs?: number;
+}
+
+/** Error raised when jCLI rejects a command; `output` carries the raw console text. */
+export class JCliError extends Error {
+  constructor(message: string, public readonly output = '') {
+    super(message);
+    this.name = 'JCliError';
+  }
+}
+
+// Main prompt `jcli : ` and interactive-session prompt `> ` (both appear at the end of output).
+const PROMPT_RE = /(?:^|\n)(?:jcli : |> )$/;
+// Telnet IAC negotiation and terminal control sequences sent by Jasmin's console on connect.
+const IAC_RE = /\xff[\xfb-\xfe][\s\S]|\xff[\xf0-\xfa]|\x1b(?:\[[0-9;]*[a-zA-Z]|c)/g;
+// Error lines observed from Jasmin 0.11.1 jCLI.
+const ERROR_RE = /^(?:Unknown .*|Error:.*|Invalid .*|You must .*|This route order .*|\[IO\].*|Incorrect .*|.* cannot .*)$/m;
+
+/**
+ * Normalise a raw jCLI response: strip telnet noise and `\r`, drop the echoed command line
+ * (jCLI echoes input) and the trailing prompt.
+ */
+export function cleanOutput(raw: string, command?: string): string {
+  const lines = raw
+    .replace(IAC_RE, '')
+    .replace(/\r/g, '')
+    .split('\n');
+  if (command !== undefined && lines.length > 0 && lines[0].trim() === command.trim()) lines.shift();
+  return lines
+    .filter((l) => l.trim() !== '' && !/^(?:jcli : |> )\s*$/.test(l))
+    .join('\n')
+    .replace(/(?:jcli : |> )$/, '')
+    .trim();
+}
+
+/**
+ * Parse a jCLI list table. Jasmin left-justifies every column, so the start offset of each column
+ * is the position of its label in the `#Header` line. Labels are passed explicitly because several
+ * contain spaces ("Connector ID(s)", "MT SMS") and columns are sometimes separated by one space.
+ * Values may contain spaces (dates, filter descriptions); a value longer than its column pushes the
+ * following cells right, which is handled by snapping to the next token boundary.
+ * Returns one array of trimmed cells per data row; header and "Total ..." footer are excluded.
+ */
+export function parseTable(output: string, labels: string[]): string[][] {
+  const lines = output.replace(/\r/g, '').split('\n');
+  const headerIdx = lines.findIndex((l) => l.trim().startsWith(`#${labels[0]}`));
+  if (headerIdx === -1) return [];
+  const header = lines[headerIdx].replace(/^\s+/, '');
+
+  const starts: number[] = [];
+  let from = 0;
+  for (const label of labels) {
+    const at = header.indexOf(label, from);
+    if (at === -1) break;
+    starts.push(label === labels[0] ? 0 : at);
+    from = at + label.length;
+  }
+
+  const rows: string[][] = [];
+  for (let li = headerIdx + 1; li < lines.length; li++) {
+    const line = lines[li].replace(/^\s+/, '').replace(/\s+$/, '');
+    if (!line.startsWith('#')) continue;
+    const cells: string[] = [];
+    let cursor = 0;
+    for (let c = 0; c < starts.length; c++) {
+      let start = Math.max(starts[c], cursor);
+      // Previous value overflowed into this column: skip to the next token.
+      if (start > 0 && start < line.length && line[start - 1] !== ' ') {
+        const sp = line.indexOf(' ', start);
+        start = sp === -1 ? line.length : sp;
+      }
+      const isLast = c === starts.length - 1;
+      let end = isLast ? line.length : Math.max(starts[c + 1], start);
+      // This value overflows into the next column: extend to the end of its token.
+      if (!isLast && end < line.length && end > start && line[end - 1] !== ' ' && line[end] !== ' ') {
+        const sp = line.indexOf(' ', end);
+        end = sp === -1 ? line.length : sp;
+      }
+      cells.push(line.slice(start, end).trim());
+      cursor = end;
+    }
+    cells[0] = (cells[0] ?? '').replace(/^#/, '');
+    rows.push(cells);
+  }
+  return rows;
+}
+
+/** Split a jCLI list cell like "smppc(a), smppc(b)" or "<T>, <DA (dst_addr=^1)>" into items. */
+export function splitList(cell: string): string[] {
+  const items: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of cell) {
+    if (ch === '(' || ch === '<') depth++;
+    if (ch === ')' || ch === '>') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) {
+      if (current.trim()) items.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) items.push(current.trim());
+  return items;
+}
+
+/**
+ * Extract the parameter value from a jCLI filter description.
+ * Examples: "<DA (dst_addr=^2010)>" -> "^2010", "<TI (08:00:00,18:00:00)>" -> "08:00:00;18:00:00", "<T>" -> "".
+ */
+export function filterValueFromDescription(description: string): string {
+  const kv = description.match(/^<\w+ \((\w+)=(.*)\)>$/);
+  if (kv) return kv[2];
+  const interval = description.match(/^<(?:TI|DI) \((.*),(.*)\)>$/);
+  if (interval) return `${interval[1]};${interval[2]}`;
+  return '';
+}
+
+function toNumber(v: string | undefined): number {
+  const n = parseFloat(String(v ?? '').replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
 }
 
 export class JCliClient {
   private config: JCliConfig;
   private socket: net.Socket | null = null;
-  private isConnected = false;
-  private commandQueue: Array<{
-    cmd: string;
-    resolve: (res: string) => void;
-    reject: (err: Error) => void;
-  }> = [];
-  private isProcessing = false;
-  private buffer = '';
+  private connected = false;
+  private connecting: Promise<void> | null = null;
+  private lock: Promise<unknown> = Promise.resolve();
+  private pending: { buffer: string; resolve: (s: string) => void; reject: (e: Error) => void; timer: NodeJS.Timeout } | null = null;
+  /** Version string from the console banner, e.g. "0.11.1". */
+  public version: string | null = null;
+  public lastError: string | null = null;
 
   constructor(config: JCliConfig) {
     this.config = config;
   }
 
-  public async connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+  public get isConnected(): boolean {
+    return this.connected;
+  }
+
+  public connect(): Promise<void> {
+    if (this.connected && this.socket) return Promise.resolve();
+    if (this.connecting) return this.connecting;
+
+    this.connecting = new Promise<void>((resolve, reject) => {
       const socket = new net.Socket();
-      this.socket = socket;
-
-      let authStage = 0;
-      let initTimeout = setTimeout(() => {
+      let stage: 'banner' | 'password' | 'wait' | 'ready' = 'banner';
+      let buf = '';
+      const fail = (err: Error) => {
+        clearTimeout(timer);
+        this.lastError = err.message;
         socket.destroy();
-        reject(new Error(`Connection to jCLI at ${this.config.host}:${this.config.port} timed out.`));
-      }, 8000);
-
-      socket.connect(this.config.port, this.config.host, () => {
-        // Connected at TCP level, awaiting telnet banner
-      });
-
-      socket.on('data', (data) => {
-        const text = data.toString('utf-8');
-        this.buffer += text;
-
-        if (authStage === 0 && (text.includes('Authentication required') || text.includes('Username:'))) {
-          authStage = 1;
-          socket.write(`${this.config.username}\n`);
-          this.buffer = '';
-        } else if (authStage === 1 && text.includes('Password:')) {
-          authStage = 2;
-          socket.write(`${this.config.password || ''}\n`);
-          this.buffer = '';
-        } else if (authStage === 2 && (text.includes('Welcome to Jasmin') || text.includes('jcli :'))) {
-          authStage = 3;
-          this.isConnected = true;
-          clearTimeout(initTimeout);
-          this.buffer = '';
-          resolve();
-        } else if (text.includes('Incorrect') || text.includes('Authentication failed')) {
-          clearTimeout(initTimeout);
-          socket.destroy();
-          reject(new Error('jCLI Authentication failed: Incorrect Username or Password'));
-        }
-      });
-
-      socket.on('error', (err) => {
-        clearTimeout(initTimeout);
-        this.isConnected = false;
         reject(err);
-      });
-
-      socket.on('close', () => {
-        this.isConnected = false;
-        this.socket = null;
-      });
-    });
-  }
-
-  public async executeCommand(command: string): Promise<string> {
-    if (!this.isConnected || !this.socket) {
-      await this.connect();
-    }
-
-    return new Promise((resolve, reject) => {
-      this.commandQueue.push({ cmd: command, resolve, reject });
-      this.processQueue();
-    });
-  }
-
-  private async processQueue(): Promise<void> {
-    if (this.isProcessing || this.commandQueue.length === 0) return;
-    this.isProcessing = true;
-
-    const current = this.commandQueue.shift()!;
-    try {
-      const output = await this.sendSingleCommand(current.cmd);
-      current.resolve(output);
-    } catch (err: any) {
-      current.reject(err);
-    } finally {
-      this.isProcessing = false;
-      this.processQueue();
-    }
-  }
-
-  private sendSingleCommand(command: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      if (!this.socket) return reject(new Error('Socket not connected'));
-
-      let collected = '';
-      const onData = (chunk: Buffer) => {
-        collected += chunk.toString('utf-8');
-        // Check if command finished and prompt returned
-        if (collected.includes('jcli :') || collected.includes('jcli (') || collected.includes('> ')) {
-          this.socket?.removeListener('data', onData);
-          resolve(collected);
-        }
       };
+      const timer = setTimeout(
+        () => fail(new Error(`Connection to jCLI at ${this.config.host}:${this.config.port} timed out`)),
+        this.config.connectTimeoutMs ?? 8000
+      );
 
-      this.socket.on('data', onData);
-      this.socket.write(`${command}\n`);
+      socket.on('data', (chunk) => {
+        const text = chunk.toString('utf-8').replace(IAC_RE, '');
+        if (stage === 'ready') {
+          this.onData(text);
+          return;
+        }
+        buf += text;
+        const banner = buf.match(/Welcome to Jasmin ([\w.\-]+)/);
+        if (banner) this.version = banner[1];
 
-      setTimeout(() => {
-        this.socket?.removeListener('data', onData);
-        resolve(collected);
-      }, 3500);
+        if (/Incorrect|Authentication failed/i.test(buf)) {
+          fail(new JCliError('jCLI authentication failed: incorrect username or password', buf));
+        } else if (stage === 'banner' && /Authentication required|Username:\s*$/.test(buf)) {
+          // Jasmin 0.11 prints "Authentication required." and then waits for the username without a prompt.
+          stage = 'password';
+          buf = '';
+          socket.write(`${this.config.username}\r\n`);
+        } else if (stage === 'password' && /Password:\s*$/.test(buf)) {
+          stage = 'wait';
+          buf = '';
+          socket.write(`${this.config.password ?? ''}\r\n`);
+        } else if (/jcli : $/.test(buf)) {
+          stage = 'ready';
+          clearTimeout(timer);
+          this.socket = socket;
+          this.connected = true;
+          this.lastError = null;
+          resolve();
+        }
+      });
+
+      socket.on('error', (err) => fail(err));
+      socket.on('close', () => {
+        this.connected = false;
+        this.socket = null;
+        if (this.pending) {
+          clearTimeout(this.pending.timer);
+          this.pending.reject(new Error('jCLI connection closed'));
+          this.pending = null;
+        }
+      });
+
+      socket.connect(this.config.port, this.config.host);
+    }).finally(() => {
+      this.connecting = null;
+    });
+
+    return this.connecting;
+  }
+
+  private onData(text: string) {
+    if (!this.pending) return;
+    this.pending.buffer += text;
+    if (PROMPT_RE.test(this.pending.buffer.replace(/\r/g, ''))) {
+      const { buffer, resolve, timer } = this.pending;
+      clearTimeout(timer);
+      this.pending = null;
+      resolve(buffer);
+    }
+  }
+
+  /** Send one line and wait for the next prompt. Must be called while holding the lock. */
+  private async send(command: string): Promise<string> {
+    await this.connect();
+    const socket = this.socket;
+    if (!socket) throw new Error('jCLI socket not connected');
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending = null;
+        // The console state is unknown after a timeout: drop the session so the next call starts clean.
+        this.disconnect();
+        reject(new Error(`jCLI command timed out: ${command.split(' ')[0]}`));
+      }, this.config.commandTimeoutMs ?? 6000);
+      this.pending = { buffer: '', resolve, reject, timer };
+      socket.write(`${command}\r\n`);
     });
   }
 
-  // --- High Level API Methods ---
+  /** Run `fn` with exclusive access to the console (multi-line sessions must not interleave). */
+  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.lock.then(fn, fn);
+    this.lock = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Execute a single command and return its cleaned output. */
+  public executeCommand(command: string): Promise<string> {
+    return this.exclusive(async () => cleanOutput(await this.send(command), command));
+  }
+
+  /**
+   * Run an interactive add session (`user -a`, `filter -a`, ...). Every line is checked for a jCLI
+   * error; on failure the session is aborted with `ko` so the console returns to the main prompt.
+   */
+  private addSession(open: string, lines: string[], successText = 'Successfully added'): Promise<string> {
+    return this.exclusive(async () => {
+      const opened = cleanOutput(await this.send(open), open);
+      if (ERROR_RE.test(opened)) throw new JCliError(this.firstError(opened), opened);
+      try {
+        for (const line of lines) {
+          const out = cleanOutput(await this.send(line), line);
+          if (out && ERROR_RE.test(out)) throw new JCliError(`${line.split(' ')[0]}: ${this.firstError(out)}`, out);
+        }
+        const done = cleanOutput(await this.send('ok'), 'ok');
+        if (!done.includes(successText)) throw new JCliError(this.firstError(done) || 'jCLI rejected the entry', done);
+        return done;
+      } catch (err) {
+        await this.send('ko').catch(() => undefined);
+        throw err;
+      }
+    });
+  }
+
+  private firstError(out: string): string {
+    const m = out.match(ERROR_RE);
+    return (m ? m[0] : out.split('\n')[0] || '').trim();
+  }
+
+  private async removeEntity(command: string, what: string): Promise<void> {
+    const out = await this.executeCommand(command);
+    if (!/Successfully removed/i.test(out)) {
+      throw new JCliError(`Could not remove ${what}: ${this.firstError(out) || out}`, out);
+    }
+  }
+
+  // --- Users & groups -------------------------------------------------------
 
   public async getUsers(): Promise<JasminUser[]> {
-    const output = await this.executeCommand('user -l');
-    const users: JasminUser[] = [];
-    const lines = output.split('\n');
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('#') || trimmed.startsWith('#User id')) continue;
-      // Example: #user_01 customer_group client1 50.0 ND ND/ND
-      const parts = trimmed.substring(1).trim().split(/\s+/);
-      if (parts.length >= 4) {
-        users.push({
-          uid: parts[0],
-          gid: parts[1],
-          username: parts[2],
-          balance: isNaN(Number(parts[3])) ? parts[3] : Number(parts[3]),
-          mtSmsQuota: parts[4] || 'ND',
-          throughput: parts[5] || 'ND'
-        });
-      }
-    }
-    return users;
+    const rows = parseTable(await this.executeCommand('user -l'), ['User id', 'Group id', 'Username', 'Balance', 'MT SMS', 'Throughput']);
+    return rows
+      .filter((r) => r[0])
+      .map((r) => {
+        // "ND (!)" means "not defined" (unlimited); jCLI adds "(!)" as a warning marker.
+        const nd = (v?: string) => (v ?? 'ND').replace(/\s*\(!\)\s*$/, '').trim() || 'ND';
+        const balance = nd(r[3]);
+        return {
+          uid: r[0],
+          gid: r[1] ?? '',
+          username: r[2] ?? '',
+          balance: balance !== 'ND' && !isNaN(Number(balance)) ? Number(balance) : balance,
+          mtSmsQuota: nd(r[4]),
+          throughput: nd(r[5])
+        };
+      });
   }
 
   public async getGroups(): Promise<JasminGroup[]> {
-    const output = await this.executeCommand('group -l');
-    const groups: JasminGroup[] = [];
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('#') || trimmed.startsWith('#Group id')) continue;
-      const gid = trimmed.substring(1).trim();
-      if (gid) groups.push({ gid });
-    }
-    return groups;
+    const rows = parseTable(await this.executeCommand('group -l'), ['Group id']);
+    return rows.filter((r) => r[0]).map((r) => ({ gid: r[0] }));
   }
 
-  public async createGroup(gid: string): Promise<boolean> {
-    await this.executeCommand('group -a');
-    await this.executeCommand(`gid ${gid}`);
-    const res = await this.executeCommand('ok');
-    return res.includes('Successfully added');
+  public async createGroup(gid: string): Promise<void> {
+    await this.addSession('group -a', [`gid ${gid}`]);
+  }
+
+  public async deleteGroup(gid: string): Promise<void> {
+    await this.removeEntity(`group -r ${gid}`, `group ${gid}`);
   }
 
   public async createUser(user: {
@@ -193,154 +348,75 @@ export class JCliClient {
     balance?: number;
     httpThroughput?: number;
     mtSmsQuota?: number;
-  }): Promise<boolean> {
-    await this.executeCommand('user -a');
-    await this.executeCommand(`uid ${user.uid}`);
-    await this.executeCommand(`gid ${user.gid}`);
-    await this.executeCommand(`username ${user.username}`);
-    await this.executeCommand(`password ${user.password}`);
-    await this.executeCommand('mt_messaging_cred authorization http_send 1');
-    await this.executeCommand('mt_messaging_cred authorization http_balance 1');
-    await this.executeCommand('mt_messaging_cred authorization smpps_send 1');
-    await this.executeCommand('smpps_cred authorization bind 1');
-    if (user.balance !== undefined) {
-      await this.executeCommand(`mt_messaging_cred quota balance ${user.balance}`);
+  }): Promise<void> {
+    const lines = [`uid ${user.uid}`, `gid ${user.gid}`, `username ${user.username}`, `password ${user.password}`];
+    if (user.balance !== undefined && Number.isFinite(user.balance)) lines.push(`mt_messaging_cred quota balance ${user.balance}`);
+    if (user.mtSmsQuota !== undefined && Number.isFinite(user.mtSmsQuota)) lines.push(`mt_messaging_cred quota sms_count ${user.mtSmsQuota}`);
+    if (user.httpThroughput !== undefined && Number.isFinite(user.httpThroughput)) {
+      lines.push(`mt_messaging_cred quota http_throughput ${user.httpThroughput}`);
     }
-    if (user.mtSmsQuota !== undefined) {
-      await this.executeCommand(`mt_messaging_cred quota sms_count ${user.mtSmsQuota}`);
-    }
-    if (user.httpThroughput !== undefined) {
-      await this.executeCommand(`mt_messaging_cred quota http_throughput ${user.httpThroughput}`);
-    }
-    const res = await this.executeCommand('ok');
-    return res.includes('Successfully added');
+    await this.addSession('user -a', lines);
   }
 
-  public async deleteUser(uid: string): Promise<boolean> {
-    const res = await this.executeCommand(`user -r ${uid}`);
-    return res.includes('Successfully removed') || !res.includes('Error');
+  /** Update an existing user with raw jCLI attribute lines (e.g. "mt_messaging_cred quota balance 10"). */
+  public async updateUser(uid: string, lines: string[]): Promise<void> {
+    await this.addSession(`user -u ${uid}`, lines, 'Successfully updated');
   }
+
+  public async deleteUser(uid: string): Promise<void> {
+    await this.removeEntity(`user -r ${uid}`, `user ${uid}`);
+  }
+
+  // --- Connectors -----------------------------------------------------------
 
   public async getHttpConnectors(): Promise<JasminHttpConnector[]> {
-    const output = await this.executeCommand('httpccm -l');
-    const connectors: JasminHttpConnector[] = [];
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('#') || trimmed.startsWith('#Httpcc id')) continue;
-      const parts = trimmed.substring(1).trim().split(/\s+/);
-      if (parts.length >= 4) {
-        connectors.push({
-          cid: parts[0],
-          type: parts[1],
-          method: parts[2],
-          url: parts.slice(3).join(' ')
-        });
-      }
-    }
-    return connectors;
+    const rows = parseTable(await this.executeCommand('httpccm -l'), ['Httpcc id', 'Type', 'Method', 'URL']);
+    return rows
+      .filter((r) => r[0])
+      .map((r) => ({ cid: r[0], type: r[1] ?? '', method: r[2] ?? '', url: r.slice(3).join(' ').trim() }));
   }
 
-  public async createHttpConnector(cid: string, url: string, method = 'POST'): Promise<boolean> {
-    await this.executeCommand('httpccm -a');
-    await this.executeCommand(`cid ${cid}`);
-    await this.executeCommand(`url ${url}`);
-    await this.executeCommand(`method ${method.toUpperCase()}`);
-    const res = await this.executeCommand('ok');
-    return res.includes('Successfully added');
+  public async createHttpConnector(cid: string, url: string, method = 'POST'): Promise<void> {
+    await this.addSession('httpccm -a', [`cid ${cid}`, `url ${url}`, `method ${method.toUpperCase()}`]);
   }
 
-  public async deleteHttpConnector(cid: string): Promise<boolean> {
-    const res = await this.executeCommand(`httpccm -r ${cid}`);
-    return res.includes('Successfully removed');
+  public async deleteHttpConnector(cid: string): Promise<void> {
+    await this.removeEntity(`httpccm -r ${cid}`, `HTTP connector ${cid}`);
   }
 
-  public async getMoRoutes(): Promise<JasminMoRoute[]> {
-    const output = await this.executeCommand('morouter -l');
-    const routes: JasminMoRoute[] = [];
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('#') || trimmed.startsWith('#Order')) continue;
-      const parts = trimmed.substring(1).trim().split(/\s+/);
-      if (parts.length >= 3) {
-        routes.push({
-          order: parseInt(parts[0], 10),
-          type: parts[1],
-          connector: parts[2],
-          filters: parts.slice(3)
-        });
-      }
+  /** SMPP client connectors merged with their per-connector counters (`stats --smppcs`). */
+  public async getSmppConnectors(): Promise<JasminSmppConnector[]> {
+    const listRows = parseTable(await this.executeCommand('smppccm -l'), ['Connector id', 'Service', 'Session', 'Starts', 'Stops']);
+    let statRows: string[][] = [];
+    try {
+      statRows = parseTable(await this.executeCommand('stats --smppcs'), [
+        'Connector id', 'Connected at', 'Bound at', 'Disconnected at', 'Submits', 'Delivers', 'QoS errs', 'Other errs'
+      ]);
+    } catch {
+      statRows = [];
     }
-    return routes;
-  }
+    const stats = new Map(statRows.map((r) => [r[0], r]));
 
-  public async createMoRoute(type: string, connector: string, order = 0, filters: string[] = []): Promise<boolean> {
-    await this.executeCommand('morouter -a');
-    await this.executeCommand(`type ${type}`);
-    if (type !== 'DefaultRoute') {
-      const assignedOrder = order > 0 ? order : 10;
-      await this.executeCommand(`order ${assignedOrder}`);
-    }
-    const trimmed = connector.trim();
-    const formatConn = (trimmed.startsWith('httpcc(') || trimmed.startsWith('smppc(')) ? trimmed : `httpcc(${trimmed})`;
-    await this.executeCommand(`connector ${formatConn}`);
-    if (type !== 'DefaultRoute' && filters && filters.length > 0) {
-      await this.executeCommand(`filters ${filters.join(';')}`);
-    }
-    const res = await this.executeCommand('ok');
-    if (!res.includes('Successfully added')) {
-      await this.executeCommand('ko');
-      return false;
-    }
-    return true;
-  }
-
-  public async deleteMoRoute(order: number): Promise<boolean> {
-    const res = await this.executeCommand(`morouter -r ${order}`);
-    return res.includes('Successfully removed');
-  }
-
-  public async getMtRoutes(): Promise<JasminMtRoute[]> {
-    const output = await this.executeCommand('mtrouter -l');
-    const routes: JasminMtRoute[] = [];
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('#') || trimmed.startsWith('#Order')) continue;
-      const parts = trimmed.substring(1).trim().split(/\s+/);
-      if (parts.length >= 4) {
-        routes.push({
-          order: parseInt(parts[0], 10),
-          type: parts[1],
-          rate: parseFloat(parts[2]),
-          connector: parts[3],
-          filters: parts.slice(4)
-        });
-      }
-    }
-    return routes;
-  }
-
-  public async getSmppConnectors(): Promise<any[]> {
-    const output = await this.executeCommand('smppccm -l');
-    const connectors: any[] = [];
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('#') || trimmed.startsWith('#Connector id')) continue;
-      const parts = trimmed.substring(1).trim().split(/\s+/);
-      if (parts.length >= 5) {
-        connectors.push({
-          cid: parts[0],
-          service: parts[1],
-          session: parts[2],
-          starts: parseInt(parts[3], 10),
-          stops: parseInt(parts[4], 10)
-        });
-      }
-    }
-    return connectors;
+    return listRows
+      .filter((r) => r[0])
+      .map((r) => {
+        const s = stats.get(r[0]) || [];
+        const nd = (v?: string) => (v && v !== 'ND' ? v : '');
+        return {
+          cid: r[0],
+          service: (r[1] ?? '').toLowerCase(),
+          session: r[2] ?? '',
+          starts: toNumber(r[3]),
+          stops: toNumber(r[4]),
+          connectedAt: nd(s[1]),
+          boundAt: nd(s[2]),
+          disconnectedAt: nd(s[3]),
+          submits: s[4] ?? '0',
+          delivers: s[5] ?? '0',
+          qosErrors: toNumber(s[6]),
+          otherErrors: toNumber(s[7])
+        };
+      });
   }
 
   public async createSmppConnector(conn: {
@@ -351,221 +427,204 @@ export class JCliClient {
     password: string;
     systemType?: string;
     bind?: string;
-  }): Promise<boolean> {
-    await this.executeCommand('smppccm -a');
-    await this.executeCommand(`cid ${conn.cid}`);
-    await this.executeCommand(`host ${conn.host}`);
-    await this.executeCommand(`port ${conn.port}`);
-    await this.executeCommand(`username ${conn.username}`);
-    await this.executeCommand(`password ${conn.password}`);
-    if (conn.systemType) {
-      await this.executeCommand(`system_type ${conn.systemType}`);
-    }
-    if (conn.bind) {
-      await this.executeCommand(`bind ${conn.bind}`);
-    }
-    const res = await this.executeCommand('ok');
-    return res.includes('Successfully added');
+  }): Promise<void> {
+    const lines = [`cid ${conn.cid}`, `host ${conn.host}`, `port ${conn.port}`, `username ${conn.username}`, `password ${conn.password}`];
+    if (conn.systemType) lines.push(`systype ${conn.systemType}`);
+    if (conn.bind) lines.push(`bind ${conn.bind}`);
+    await this.addSession('smppccm -a', lines);
   }
 
-  public async startSmppConnector(cid: string): Promise<boolean> {
-    const res = await this.executeCommand(`smppccm -1 ${cid}`);
-    return !res.includes('Error');
+  public async startSmppConnector(cid: string): Promise<void> {
+    const out = await this.executeCommand(`smppccm -1 ${cid}`);
+    if (!/Successfully started/i.test(out)) throw new JCliError(this.firstError(out) || out, out);
   }
 
-  public async stopSmppConnector(cid: string): Promise<boolean> {
-    const res = await this.executeCommand(`smppccm -0 ${cid}`);
-    return !res.includes('Error');
+  public async stopSmppConnector(cid: string): Promise<void> {
+    const out = await this.executeCommand(`smppccm -0 ${cid}`);
+    if (!/Successfully stopped/i.test(out)) throw new JCliError(this.firstError(out) || out, out);
   }
 
-  public async deleteSmppConnector(cid: string): Promise<boolean> {
-    const res = await this.executeCommand(`smppccm -r ${cid}`);
-    return res.includes('Successfully removed');
+  public async deleteSmppConnector(cid: string): Promise<void> {
+    await this.removeEntity(`smppccm -r ${cid}`, `SMPP connector ${cid}`);
   }
 
-  public async createMtRoute(
+  // --- Routers ----------------------------------------------------------------
+
+  public async getMoRoutes(): Promise<JasminMoRoute[]> {
+    const rows = parseTable(await this.executeCommand('morouter -l'), ['Order', 'Type', 'Connector ID(s)', 'Filter(s)']);
+    return rows
+      .filter((r) => r[0] !== '' && !isNaN(parseInt(r[0], 10)))
+      .map((r) => {
+        const connectors = splitList(r[2] ?? '');
+        return {
+          order: parseInt(r[0], 10),
+          type: r[1] ?? '',
+          connector: connectors.join(';'),
+          connectors,
+          filters: splitList(r[3] ?? '')
+        };
+      });
+  }
+
+  public async getMtRoutes(): Promise<JasminMtRoute[]> {
+    const rows = parseTable(await this.executeCommand('mtrouter -l'), ['Order', 'Type', 'Rate', 'Connector ID(s)', 'Filter(s)']);
+    return rows
+      .filter((r) => r[0] !== '' && !isNaN(parseInt(r[0], 10)))
+      .map((r) => {
+        const connectors = splitList(r[3] ?? '');
+        return {
+          order: parseInt(r[0], 10),
+          type: r[1] ?? '',
+          rate: toNumber(r[2]),
+          connector: connectors.join(';'),
+          connectors,
+          filters: splitList(r[4] ?? '')
+        };
+      });
+  }
+
+  private static typedConnector(c: string, fallbackType: 'smppc' | 'http'): string {
+    const trimmed = c.trim();
+    return /^(smppc|http|smpps)\(.+\)$/i.test(trimmed) ? trimmed : `${fallbackType}(${trimmed})`;
+  }
+
+  private static routeLines(
     type: string,
-    rate: number,
+    order: number,
     connector: string | string[],
-    order = 0,
-    filters: string[] = []
-  ): Promise<boolean> {
-    await this.executeCommand('mtrouter -a');
-    await this.executeCommand(`type ${type}`);
-    await this.executeCommand(`rate ${rate}`);
-    if (type !== 'DefaultRoute') {
-      const assignedOrder = order > 0 ? order : 10;
-      await this.executeCommand(`order ${assignedOrder}`);
-    }
-
-    const formatConn = (c: string) => {
-      const trimmed = c.trim();
-      return (trimmed.startsWith('smppc(') || trimmed.startsWith('httpcc(')) ? trimmed : `smppc(${trimmed})`;
-    };
-
-    if (type === 'FailoverMTRoute' || type === 'RandomRoundrobinMTRoute') {
-      const connList = Array.isArray(connector) ? connector : connector.split(/[;,]/);
-      const formatted = connList.map(c => formatConn(c)).join(';');
-      await this.executeCommand(`connectors ${formatted}`);
-    } else {
-      const singleConn = Array.isArray(connector) ? connector[0] : connector;
-      await this.executeCommand(`connector ${formatConn(singleConn)}`);
-    }
-
-    if (type !== 'DefaultRoute' && filters && filters.length > 0) {
-      await this.executeCommand(`filters ${filters.join(';')}`);
-    }
-    const res = await this.executeCommand('ok');
-    if (!res.includes('Successfully added')) {
-      await this.executeCommand('ko');
-      return false;
-    }
-    return true;
+    filters: string[],
+    fallbackType: 'smppc' | 'http'
+  ): string[] {
+    const lines = [`type ${type}`];
+    if (type !== 'DefaultRoute') lines.push(`order ${order}`);
+    const list = (Array.isArray(connector) ? connector : connector.split(/[;,]/)).map((c) => c.trim()).filter(Boolean);
+    if (list.length === 0) throw new JCliError('A route needs at least one connector');
+    const formatted = list.map((c) => JCliClient.typedConnector(c, fallbackType));
+    if (/Failover|Roundrobin/i.test(type)) lines.push(`connectors ${formatted.join(';')}`);
+    else lines.push(`connector ${formatted[0]}`);
+    if (type !== 'DefaultRoute' && filters.length > 0) lines.push(`filters ${filters.join(';')}`);
+    return lines;
   }
 
-  public async deleteMtRoute(order: number): Promise<boolean> {
-    const res = await this.executeCommand(`mtrouter -r ${order}`);
-    return res.includes('Successfully removed');
+  public async createMoRoute(type: string, connector: string | string[], order = 0, filters: string[] = []): Promise<void> {
+    await this.addSession('morouter -a', JCliClient.routeLines(type, order, connector, filters, 'http'));
   }
 
-  // --- Filters Management (filtersm) ---
+  public async deleteMoRoute(order: number): Promise<void> {
+    await this.removeEntity(`morouter -r ${order}`, `MO route #${order}`);
+  }
+
+  public async createMtRoute(type: string, rate: number, connector: string | string[], order = 0, filters: string[] = []): Promise<void> {
+    const lines = JCliClient.routeLines(type, order, connector, filters, 'smppc');
+    lines.splice(1, 0, `rate ${Number.isFinite(rate) ? rate : 0}`);
+    await this.addSession('mtrouter -a', lines);
+  }
+
+  public async deleteMtRoute(order: number): Promise<void> {
+    await this.removeEntity(`mtrouter -r ${order}`, `MT route #${order}`);
+  }
+
+  // --- Filters ----------------------------------------------------------------
 
   public async getFilters(): Promise<JasminFilter[]> {
-    const output = await this.executeCommand('filter -l');
-    const filters: JasminFilter[] = [];
-    for (const line of output.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('#') || trimmed.startsWith('#Filter id')) continue;
-      const parts = trimmed.substring(1).trim().split(/\s+/);
-      if (parts.length >= 2) {
-        const fid = parts[0];
-        const type = parts[1];
-        let routes = '';
-        let descIdx = 2;
-        if (parts[2] === 'MO' && parts[3] === 'MT') {
-          routes = 'MO MT';
-          descIdx = 4;
-        } else if (parts[2] === 'MO' || parts[2] === 'MT') {
-          routes = parts[2];
-          descIdx = 3;
-        }
-        const description = parts.slice(descIdx).join(' ');
-        filters.push({ fid, type, routes, description });
-      }
-    }
-    return filters;
+    const rows = parseTable(await this.executeCommand('filter -l'), ['Filter id', 'Type', 'Routes', 'Description']);
+    return rows
+      .filter((r) => r[0])
+      .map((r) => {
+        const description = (r[3] ?? '').trim();
+        const key = description.match(/^<\w+ \((\w+)=/);
+        return {
+          fid: r[0],
+          type: r[1] ?? '',
+          routes: (r[2] ?? '').trim(),
+          description,
+          paramKey: key ? key[1] : '',
+          value: filterValueFromDescription(description)
+        };
+      });
   }
 
-  public async createFilter(fid: string, type: string, paramKey: string, paramValue: string): Promise<boolean> {
-    await this.executeCommand('filter -a');
-    await this.executeCommand(`fid ${fid}`);
-    await this.executeCommand(`type ${type}`);
-    if (paramKey && paramValue) {
-      await this.executeCommand(`${paramKey} ${paramValue}`);
-    }
-    const res = await this.executeCommand('ok');
-    return res.includes('Successfully added');
+  public async createFilter(fid: string, type: string, paramKey: string | null, paramValue: string): Promise<void> {
+    const lines = [`fid ${fid}`, `type ${type}`];
+    if (paramKey) lines.push(`${paramKey} ${paramValue}`);
+    await this.addSession('filter -a', lines);
   }
 
-  public async deleteFilter(fid: string): Promise<boolean> {
-    const res = await this.executeCommand(`filter -r ${fid}`);
-    return res.includes('Successfully removed');
+  public async deleteFilter(fid: string): Promise<void> {
+    await this.removeEntity(`filter -r ${fid}`, `filter ${fid}`);
   }
 
-  // --- Interceptors Management (interceptorm) ---
+  // --- Interceptors -----------------------------------------------------------
 
   public async getMtInterceptors(): Promise<JasminInterceptor[]> {
-    const output = await this.executeCommand('mtinterceptor -l');
-    return this.parseInterceptors(output);
+    return this.parseInterceptors(await this.executeCommand('mtinterceptor -l'));
   }
 
   public async getMoInterceptors(): Promise<JasminInterceptor[]> {
-    const output = await this.executeCommand('mointerceptor -l');
-    return this.parseInterceptors(output);
+    return this.parseInterceptors(await this.executeCommand('mointerceptor -l'));
   }
 
   private parseInterceptors(output: string): JasminInterceptor[] {
-    const interceptors: JasminInterceptor[] = [];
-    for (const line of output.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('#') || trimmed.startsWith('#Order')) continue;
-      const parts = trimmed.substring(1).trim().split(/\s+/);
-      if (parts.length >= 3) {
-        interceptors.push({
-          order: parseInt(parts[0], 10),
-          type: parts[1],
-          script: parts[2],
-          filters: parts.slice(3)
-        });
-      }
-    }
-    return interceptors;
+    return parseTable(output, ['Order', 'Type', 'Script', 'Filter(s)'])
+      .filter((r) => r[0] !== '' && !isNaN(parseInt(r[0], 10)))
+      .map((r) => ({ order: parseInt(r[0], 10), type: r[1] ?? '', script: r[2] ?? '', filters: splitList(r[3] ?? '') }));
   }
 
-  public async getStats(): Promise<{
-    httpApi: JasminHttpApiStats;
-    smppsApi: JasminSmppsApiStats;
-  }> {
-    const httpOutput = await this.executeCommand('stats --httpapi');
-    const smppOutput = await this.executeCommand('stats --smppsapi');
+  // --- Statistics -------------------------------------------------------------
 
-    const parseKeyValue = (out: string): Record<string, string> => {
+  public async getStats(): Promise<{ httpApi: JasminHttpApiStats; smppsApi: JasminSmppsApiStats }> {
+    const kv = (out: string): Record<string, string> => {
       const map: Record<string, string> = {};
-      for (const line of out.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('#') && !trimmed.startsWith('#Item')) {
-          const [k, ...v] = trimmed.substring(1).split(/\s+/);
-          if (k) map[k] = v.join(' ');
-        }
-      }
+      for (const r of parseTable(out, ['Item', 'Value'])) if (r[0]) map[r[0]] = r[1] ?? '';
       return map;
     };
-
-    const hMap = parseKeyValue(httpOutput);
-    const sMap = parseKeyValue(smppOutput);
+    const h = kv(await this.executeCommand('stats --httpapi'));
+    const s = kv(await this.executeCommand('stats --smppsapi'));
+    const int = (v?: string) => (v && /^-?\d+$/.test(v) ? parseInt(v, 10) : 0);
 
     return {
       httpApi: {
-        createdAt: hMap['created_at'] || 'ND',
-        requestCount: parseInt(hMap['request_count'] || '0', 10),
-        lastRequestAt: hMap['last_request_at'] || 'ND',
-        authErrorCount: parseInt(hMap['auth_error_count'] || '0', 10),
-        routeErrorCount: parseInt(hMap['route_error_count'] || '0', 10),
-        interceptorErrorCount: parseInt(hMap['interceptor_error_count'] || '0', 10),
-        throughputErrorCount: parseInt(hMap['throughput_error_count'] || '0', 10),
-        chargingErrorCount: parseInt(hMap['charging_error_count'] || '0', 10),
-        serverErrorCount: parseInt(hMap['server_error_count'] || '0', 10),
-        successCount: parseInt(hMap['success_count'] || '0', 10),
-        lastSuccessAt: hMap['last_success_at'] || 'ND'
+        createdAt: h['created_at'] || 'ND',
+        requestCount: int(h['request_count']),
+        lastRequestAt: h['last_request_at'] || 'ND',
+        authErrorCount: int(h['auth_error_count']),
+        routeErrorCount: int(h['route_error_count']),
+        interceptorErrorCount: int(h['interceptor_error_count']),
+        throughputErrorCount: int(h['throughput_error_count']),
+        chargingErrorCount: int(h['charging_error_count']),
+        serverErrorCount: int(h['server_error_count']),
+        successCount: int(h['success_count']),
+        lastSuccessAt: h['last_success_at'] || 'ND'
       },
       smppsApi: {
-        createdAt: sMap['created_at'] || 'ND',
-        connectedCount: parseInt(sMap['connected_count'] || '0', 10),
-        boundTrxCount: parseInt(sMap['bound_trx_count'] || '0', 10),
-        boundRxCount: parseInt(sMap['bound_rx_count'] || '0', 10),
-        boundTxCount: parseInt(sMap['bound_tx_count'] || '0', 10),
-        submitSmCount: parseInt(sMap['submit_sm_count'] || '0', 10),
-        deliverSmCount: parseInt(sMap['deliver_sm_count'] || '0', 10),
-        throttlingErrorCount: parseInt(sMap['throttling_error_count'] || '0', 10),
-        otherSubmitErrorCount: parseInt(sMap['other_submit_error_count'] || '0', 10)
+        createdAt: s['created_at'] || 'ND',
+        connectedCount: int(s['connected_count']),
+        boundTrxCount: int(s['bound_trx_count']),
+        boundRxCount: int(s['bound_rx_count']),
+        boundTxCount: int(s['bound_tx_count']),
+        submitSmCount: int(s['submit_sm_count']),
+        deliverSmCount: int(s['deliver_sm_count']),
+        throttlingErrorCount: int(s['throttling_error_count']),
+        otherSubmitErrorCount: int(s['other_submit_error_count'])
       }
     };
   }
 
+  // --- Persistence --------------------------------------------------------------
+
   public async persist(): Promise<string> {
-    return await this.executeCommand('persist');
+    return this.executeCommand('persist');
   }
 
   public async load(): Promise<string> {
-    return await this.executeCommand('load');
+    return this.executeCommand('load');
   }
 
   public disconnect(): void {
+    this.connected = false;
     if (this.socket) {
-      this.socket.end();
       this.socket.destroy();
       this.socket = null;
-      this.isConnected = false;
     }
   }
 }

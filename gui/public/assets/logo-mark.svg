@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-32 -32 64 64" width="64" height="64" role="img" aria-label="Jasmin">
+  <title>Jasmin</title>
+  <g fill="#0480bc">
+    <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2"/>
+    <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2" transform="rotate(72)"/>
+    <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2" transform="rotate(144)"/>
+    <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2" transform="rotate(216)"/>
+    <ellipse cx="0" cy="-14.5" rx="9.6" ry="13.2" transform="rotate(288)"/>
+  </g>
+  <g fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" opacity=".55">
+    <path d="M0 -6V-21"/><path d="M0 -6V-21" transform="rotate(72)"/><path d="M0 -6V-21" transform="rotate(144)"/>
+    <path d="M0 -6V-21" transform="rotate(216)"/><path d="M0 -6V-21" transform="rotate(288)"/>
+  </g>
+  <circle r="5.2" fill="#ffffff"/>
+  <circle r="2.4" fill="#f2c94c"/>
+</svg>

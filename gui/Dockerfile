@@ -13,7 +13,7 @@ COPY --chown=node:node src/ ./src/
 RUN npm run build
 
 # Prune dev dependencies for minimal production footprint
-RUN npm prune --omit=dev && npm cache clean --force
+RUN npm prune --omit=dev && npm cache clean --force && mkdir -p /app/.data && chmod 700 /app/.data
 
 # Stage 2: Minimal Production Runtime
 FROM ghcr.io/taha2samy-3/node:22 AS runner
@@ -25,6 +25,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production \
     PORT=3000 \
+    DATA_DIR=/data \
     JASMIN_CONFIG_PATH=/etc/jasmin/jasmin.cfg \
     JCLI_HOST=127.0.0.1 \
     JCLI_PORT=8990 \
@@ -38,9 +39,13 @@ COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --chown=node:node public ./public
 
+# Console accounts (users.json) and the audit log live here; mount a volume to keep them.
+COPY --from=builder --chown=node:node /app/.data /data
+VOLUME ["/data"]
+
 EXPOSE 3000
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e 'require("http").get("http://127.0.0.1:3000/api/overview", (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on("error", () => process.exit(1))'
+  CMD node -e 'require("http").get("http://127.0.0.1:" + (process.env.PORT || 3000) + "/healthz", (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on("error", () => process.exit(1))'
 
 CMD ["node", "dist/server.js"]

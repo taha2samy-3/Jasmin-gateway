@@ -121,6 +121,44 @@ dashboard:
     pullPolicy: IfNotPresent
   port: 3000
   # nodePort: 33000
+
+  # External URL of the console (scheme + host [+ port]), e.g. https://jasmin.example.com.
+  # Required for single sign-on: the OIDC redirect URI is <publicUrl>/auth/oidc/callback.
+  publicUrl: ""
+  # Set when the console is behind a reverse proxy / ingress (Express "trust proxy"), e.g. "1".
+  trustProxy: ""
+
+  # Initial administrator, created on first start when no active admin exists.
+  # Leave password empty to generate one: it is printed once in the dashboard container log.
+  admin:
+    username: admin
+    password: ""
+    existingSecret: ""
+    existingSecretKey: "dashboard-admin-password"
+
+  session:
+    idleMinutes: 60
+    maxHours: 12
+
+  # OpenID Connect single sign-on (tested with Microsoft Entra ID).
+  # New SSO users wait in "pending" until an administrator approves them with a role
+  # (admin / operator / viewer), unless roleMap assigns one from the token.
+  oidc:
+    enabled: false
+    # Entra ID: https://login.microsoftonline.com/<tenant-id>/v2.0
+    issuerUrl: ""
+    clientId: ""
+    clientSecret: ""
+    existingSecret: ""
+    existingSecretKey: "oidc-client-secret"
+    displayName: "Microsoft"
+    scopes: "openid profile email"
+    # Claim carrying app roles or groups (Entra app roles arrive in "roles").
+    roleClaim: "roles"
+    # Optional automatic role assignment, e.g. "admin=Jasmin.Admin,operator=Jasmin.Operator,viewer=Jasmin.Viewer".
+    # Empty: every new SSO user is pending until approved in "Access & audit".
+    roleMap: ""
+
   resources:
     limits:
       cpu: 500m
@@ -318,6 +356,12 @@ config:
   interceptorClient:
     host: "127.0.0.1"
     port: 8987
+
+  # [sm-listener]
+  smListener:
+    # Publish carrier responses (submit_sm_resp) on submit.sm.resp.<cid>.
+    # Required by the dashboard's live traffic view to show acceptance and latency.
+    publishSubmitSmResp: true
 
   # [dlr]
   dlr:

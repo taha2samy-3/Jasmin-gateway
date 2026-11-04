@@ -367,6 +367,83 @@
         },
         "securityContext": {
           "type": "object"
+        },
+        "publicUrl": {
+          "type": "string",
+          "description": "External URL of the console (OIDC redirect base)",
+          "pattern": "^(https?://[^/]+)?$"
+        },
+        "trustProxy": {
+          "type": "string",
+          "description": "Express trust proxy setting when behind an ingress"
+        },
+        "admin": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string",
+              "minLength": 1
+            },
+            "password": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "existingSecretKey": {
+              "type": "string"
+            }
+          }
+        },
+        "session": {
+          "type": "object",
+          "properties": {
+            "idleMinutes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxHours": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "oidc": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "issuerUrl": {
+              "type": "string"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "clientSecret": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "existingSecretKey": {
+              "type": "string"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "scopes": {
+              "type": "string"
+            },
+            "roleClaim": {
+              "type": "string"
+            },
+            "roleMap": {
+              "type": "string",
+              "description": "role=claimValue pairs, e.g. admin=Jasmin.Admin,operator=Jasmin.Operator",
+              "pattern": "^((admin|operator|viewer)=[^,=]+(,(admin|operator|viewer)=[^,=]+)*)?$"
+            }
+          }
         }
       }
     },
@@ -624,6 +701,14 @@
         },
         "interceptorClient": {
           "type": "object"
+        },
+        "smListener": {
+          "type": "object",
+          "properties": {
+            "publishSubmitSmResp": {
+              "type": "boolean"
+            }
+          }
         },
         "dlr": {
           "type": "object"

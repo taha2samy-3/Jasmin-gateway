@@ -70,6 +70,9 @@ data:
     host = {{ .Values.config.interceptorClient.host | default "127.0.0.1" }}
     port = {{ .Values.config.interceptorClient.port | default .Values.service.ports.interceptor.targetPort }}
 
+    [sm-listener]
+    publish_submit_sm_resp = {{ ternary "True" "False" .Values.config.smListener.publishSubmitSmResp }}
+
     [dlr]
     dlr_lookup_retry_delay = {{ .Values.config.dlr.dlrLookupRetryDelay | default 180 }}
     dlr_lookup_max_retries = {{ .Values.config.dlr.dlrLookupMaxRetries | default 1 }}

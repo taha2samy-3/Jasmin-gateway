@@ -1,972 +1,707 @@
-import express from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import * as http from 'http';
 import * as net from 'net';
-import { WebSocketServer, WebSocket } from 'ws';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { JCliClient } from './jasmin/jcli-client.js';
+import { WebSocketServer, WebSocket } from 'ws';
+import { JCliError } from './jasmin/jcli-client.js';
+import { JasminGateway } from './jasmin/gateway.js';
 import { ConfigReader } from './jasmin/config-reader.js';
 import { AmqpTap, JasminTrafficMessage } from './jasmin/amqp-tap.js';
+import { Auth } from './auth/auth.js';
+import { can, ROLES, Role, UserStore } from './auth/store.js';
+import {
+  applyPlan,
+  buildTopology,
+  describePlan,
+  FILTER_PARAM,
+  FlowGraph,
+  planDeploy,
+  resolveRouteFilters,
+  simulateMtRouting
+} from './jasmin/topology.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.join(__dirname, '..');
 
-const app = express();
-const server = http.createServer(app);
-
-// WebSocket Servers for Telemetry and Interactive Terminal
-const wssTelemetry = new WebSocketServer({ noServer: true });
-const wssTerminal = new WebSocketServer({ noServer: true });
-
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '../public')));
-
+// --- Configuration ---------------------------------------------------------------------------
 const configReader = new ConfigReader();
-const initialConfig = configReader.getConfig();
-const jcliSec = initialConfig.sections['jcli'] || {};
-const httpSec = initialConfig.sections['http-api'] || {};
-const amqpSec = initialConfig.sections['amqp-broker'] || {};
+const cfg = configReader.getConfig().sections;
+const sec = (name: string) => cfg[name] || {};
 
-const JCLI_HOST = process.env.JCLI_HOST || (jcliSec['bind'] && jcliSec['bind'] !== '0.0.0.0' ? jcliSec['bind'] : '127.0.0.1');
-const JCLI_PORT = parseInt(process.env.JCLI_PORT || jcliSec['port'] || '8990', 10);
-const JCLI_USERNAME = process.env.JCLI_ADMIN_USERNAME || jcliSec['admin_username'] || jcliSec['admin_user'] || 'jcliadmin';
-const JCLI_PASSWORD = process.env.JCLI_ADMIN_PASSWORD || 'jclipwd';
-const HTTP_API_URL = process.env.HTTP_API_URL || (httpSec['port'] ? `http://127.0.0.1:${httpSec['port']}` : 'http://127.0.0.1:1401');
-const PORT = parseInt(process.env.PORT || '3000', 10);
+const env = process.env;
+const JCLI_HOST = env.JCLI_HOST || (sec('jcli').bind && sec('jcli').bind !== '0.0.0.0' ? sec('jcli').bind : '127.0.0.1');
+const JCLI_PORT = parseInt(env.JCLI_PORT || sec('jcli').port || '8990', 10);
+const JCLI_USERNAME = env.JCLI_ADMIN_USERNAME || sec('jcli').admin_username || 'jcliadmin';
+const JCLI_PASSWORD = env.JCLI_ADMIN_RAW_PASSWORD || env.JCLI_ADMIN_PASSWORD || 'jclipwd';
+const HTTP_API_PORT = parseInt(sec('http-api').port || '1401', 10);
+const SMPP_SERVER_PORT = parseInt(sec('smpp-server').port || '2775', 10);
+const HTTP_API_URL = env.HTTP_API_URL || `http://127.0.0.1:${HTTP_API_PORT}`;
+const PORT = parseInt(env.PORT || '3000', 10);
+const PUBLIC_URL = (env.PUBLIC_URL || `http://localhost:${env.PORT || '3000'}`).replace(/\/$/, '');
+const DATA_DIR = env.DATA_DIR || path.join(process.cwd(), 'data');
 
-const RABBITMQ_HOST = process.env.RABBITMQ_HOST || amqpSec['host'] || '127.0.0.1';
-const RABBITMQ_PORT = parseInt(process.env.RABBITMQ_PORT || amqpSec['port'] || '5672', 10);
-const RABBITMQ_USER = process.env.RABBITMQ_USER || amqpSec['username'] || 'guest';
-const RABBITMQ_PASS = process.env.RABBITMQ_PASS || amqpSec['password'] || 'guest';
-const RABBITMQ_VHOST = process.env.RABBITMQ_VHOST || amqpSec['vhost'] || '/';
-
-const jcli = new JCliClient({
-  host: JCLI_HOST,
-  port: JCLI_PORT,
-  username: JCLI_USERNAME,
-  password: JCLI_PASSWORD
-});
-
-// Native AMQP Real-time Traffic Tap
+const amqpSec = sec('amqp-broker');
 const amqpTap = new AmqpTap({
-  host: RABBITMQ_HOST,
-  port: RABBITMQ_PORT,
-  username: RABBITMQ_USER,
-  password: RABBITMQ_PASS,
-  vhost: RABBITMQ_VHOST,
+  host: env.RABBITMQ_HOST || amqpSec.host || '127.0.0.1',
+  port: parseInt(env.RABBITMQ_PORT || amqpSec.port || '5672', 10),
+  username: env.RABBITMQ_USER || amqpSec.username || 'guest',
+  password: env.RABBITMQ_PASS || amqpSec.password || 'guest',
+  vhost: env.RABBITMQ_VHOST || amqpSec.vhost || '/',
   maxBufferSize: 10000
 });
 
-// Auto-connect to jCLI
-jcli.connect().then(() => {
-  console.log(`[JCli] Connected to Jasmin Gateway at ${JCLI_HOST}:${JCLI_PORT}`);
-}).catch(err => {
-  console.error(`[JCli] Initial connection error: ${err.message}. Retrying on demand...`);
+const gateway = new JasminGateway({ host: JCLI_HOST, port: JCLI_PORT, username: JCLI_USERNAME, password: JCLI_PASSWORD });
+
+// --- HTTP app --------------------------------------------------------------------------------
+const app = express();
+const server = http.createServer(app);
+app.disable('x-powered-by');
+app.use(express.json({ limit: '2mb' }));
+
+// --- Authentication (local accounts + optional OpenID Connect) ----------------------------
+if (env.TRUST_PROXY) app.set('trust proxy', /^\d+$/.test(env.TRUST_PROXY) ? Number(env.TRUST_PROXY) : env.TRUST_PROXY);
+
+const parseRoleMap = (raw: string | undefined) => {
+  const map: Partial<Record<Role, string>> = {};
+  for (const pair of (raw || '').split(',')) {
+    const [role, value] = pair.split('=').map((x) => x?.trim());
+    if (role && value && (ROLES as readonly string[]).includes(role)) map[role as Role] = value;
+  }
+  return map;
+};
+
+const auth = new Auth({
+  store: new UserStore(DATA_DIR),
+  publicUrl: PUBLIC_URL,
+  bootstrapAdmin: { username: env.ADMIN_USERNAME || 'admin', password: env.ADMIN_PASSWORD || undefined },
+  sessionIdleMinutes: Number(env.SESSION_IDLE_MINUTES || 60),
+  sessionMaxHours: Number(env.SESSION_MAX_HOURS || 12),
+  oidc:
+    env.OIDC_ISSUER_URL && env.OIDC_CLIENT_ID
+      ? {
+          issuerUrl: env.OIDC_ISSUER_URL,
+          clientId: env.OIDC_CLIENT_ID,
+          clientSecret: env.OIDC_CLIENT_SECRET || undefined,
+          scopes: env.OIDC_SCOPES || 'openid profile email',
+          displayName: env.OIDC_DISPLAY_NAME || 'Single sign-on',
+          roleClaim: env.OIDC_ROLE_CLAIM || 'roles',
+          roleMap: parseRoleMap(env.OIDC_ROLE_MAP)
+        }
+      : undefined
+});
+auth.bootstrap();
+
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
+app.use(auth.authenticate);
+auth.mount(app);
+
+// Pages and assets reachable without a session (the sign-in page and what it needs).
+const PUBLIC_PATHS = [/^\/login(\.html)?$/, /^\/css\//, /^\/fonts\//, /^\/assets\//, /^\/js\/(login|lib)\.js$/, /^\/favicon/];
+app.use((req, res, next) => {
+  if (PUBLIC_PATHS.some((re) => re.test(req.path))) return next();
+  if (req.path.startsWith('/api/')) return req.user ? next() : res.status(401).json({ error: 'Sign in required' });
+  if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+  if (req.user.status === 'pending') return res.redirect('/login?pending=1');
+  next();
+});
+app.use('/api', auth.csrf);
+
+const read = auth.require('gateway:read');
+const write = auth.require('gateway:write');
+
+app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
+// Front-end libraries are served from node_modules so the console works without internet access.
+const vendor: Record<string, string> = {
+  'chart.umd.js': 'chart.js/dist/chart.umd.js',
+  'xterm.js': '@xterm/xterm/lib/xterm.js',
+  'xterm.css': '@xterm/xterm/css/xterm.css',
+  'addon-fit.js': '@xterm/addon-fit/lib/addon-fit.js'
+};
+app.get('/vendor/:file', (req, res) => {
+  const rel = vendor[req.params.file];
+  if (!rel) return res.status(404).end();
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.sendFile(path.join(ROOT, 'node_modules', rel));
 });
 
-// Auto-connect AMQP Tap
-amqpTap.start().catch(() => {});
+const ID_RE = /^[A-Za-z0-9_-]{1,25}$/;
 
-// Broadcast to telemetry WebSocket clients
-function broadcastTelemetry(data: any) {
-  const msg = JSON.stringify(data);
-  for (const client of wssTelemetry.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(msg);
-    }
+class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
   }
 }
 
-// Push live AMQP traffic to telemetry clients
-amqpTap.onMessage((trafficMsg, isUpdate) => {
-  broadcastTelemetry({
-    type: isUpdate ? 'TRAFFIC_UPDATE' : 'TRAFFIC_NEW',
-    data: trafficMsg
+const requireId = (value: unknown, field: string) => {
+  if (typeof value !== 'string' || !ID_RE.test(value)) throw new HttpError(400, `${field} must be 1-25 characters: letters, digits, _ or -`);
+  return value;
+};
+const requireText = (value: unknown, field: string) => {
+  if (typeof value !== 'string' || !value.trim()) throw new HttpError(400, `${field} is required`);
+  if (/[\r\n]/.test(value)) throw new HttpError(400, `${field} must be a single line`);
+  return value.trim();
+};
+const optionalNumber = (value: unknown, field: string) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw new HttpError(400, `${field} must be a number ≥ 0`);
+  return n;
+};
+
+type Handler = (req: Request, res: Response) => Promise<unknown>;
+const route = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => {
+  fn(req, res).catch((err: any) => {
+    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof JCliError) return res.status(422).json({ error: err.message, detail: err.output });
+    if (/ECONNREFUSED|EHOSTUNREACH|ENOTFOUND|timed out|connection closed|authentication failed/i.test(err?.message || '')) {
+      return res.status(503).json({ error: `Jasmin jCLI unavailable: ${err.message}`, offline: true });
+    }
+    next(err);
+  });
+};
+
+/** Run a change and reply with a uniform payload. */
+const change = async (req: Request, res: Response, message: string, fn: Parameters<JasminGateway['mutate']>[0]) => {
+  try {
+    await gateway.mutate(fn);
+  } catch (err: any) {
+    auth.audit(req, 'gateway-change-failed', `${req.method} ${req.path}`, { error: err.message });
+    throw err;
+  }
+  auth.audit(req, 'gateway-change', `${req.method} ${req.path}`, { message });
+  res.json({ success: true, message });
+};
+
+/** Viewers may monitor traffic but not read message bodies (personal data). */
+const maskTraffic = (m: JasminTrafficMessage, role: Role | null | undefined): JasminTrafficMessage =>
+  can(role, 'traffic:content') ? m : { ...m, shortMessage: m.shortMessage ? `•••• (${m.shortMessage.length} chars)` : '', rawPdu: undefined };
+
+// --- Status & state --------------------------------------------------------------------------
+app.get(
+  '/api/status', read,
+  route(async (_req, res) => {
+    const reachable = await gateway.ping();
+    res.json({
+      jcli: { connected: reachable, host: JCLI_HOST, port: JCLI_PORT, error: reachable ? null : gateway.lastError },
+      amqp: { connected: amqpTap.connected, error: amqpTap.lastError },
+      jasminVersion: gateway.version,
+      httpApi: HTTP_API_URL,
+      ports: { http: HTTP_API_PORT, smpp: SMPP_SERVER_PORT },
+      oidc: auth.oidcEnabled
+    });
+  })
+);
+
+app.get(
+  '/api/state', read,
+  route(async (req, res) => {
+    const s = await gateway.snapshot(req.query.fresh === '1');
+    res.json({
+      ...s,
+      mtRoutes: s.mtRoutes.map((r) => ({ ...r, filterRefs: resolveRouteFilters(r, s.filters) })),
+      traffic: amqpTap.getStats()
+    });
+  })
+);
+
+app.get('/api/config', read, (_req, res) => {
+  const c = configReader.getConfig();
+  // Never expose secrets: drop password-like keys from the structured view.
+  const sections: Record<string, Record<string, string>> = {};
+  for (const [name, values] of Object.entries(c.sections)) {
+    sections[name] = Object.fromEntries(Object.entries(values).map(([k, v]) => [k, /pass|secret|token/i.test(k) ? '••••••' : v]));
+  }
+  res.json({ filePath: c.filePath, exists: c.exists, sections });
+});
+
+// --- Groups & users --------------------------------------------------------------------------
+app.post(
+  '/api/groups', write,
+  route(async (req, res) => {
+    const gid = requireId(req.body.gid, 'Group ID');
+    const s = await gateway.snapshot(true);
+    if (s.groups.some((g) => g.gid === gid)) throw new HttpError(409, `Group ${gid} already exists`);
+    await change(req, res, `Group ${gid} created`, (c) => c.createGroup(gid));
+  })
+);
+
+app.delete(
+  '/api/groups/:gid', write,
+  route(async (req, res) => {
+    const gid = requireId(req.params.gid, 'Group ID');
+    const s = await gateway.snapshot(true);
+    const members = s.users.filter((u) => u.gid === gid);
+    if (members.length && req.query.force !== '1') {
+      throw new HttpError(409, `Group ${gid} still has ${members.length} user(s): ${members.map((u) => u.uid).join(', ')}. Jasmin would delete them too.`);
+    }
+    await change(req, res, `Group ${gid} removed`, (c) => c.deleteGroup(gid));
+  })
+);
+
+app.post(
+  '/api/users', write,
+  route(async (req, res) => {
+    const uid = requireId(req.body.uid, 'User ID');
+    const gid = requireId(req.body.gid, 'Group ID');
+    const username = requireId(req.body.username, 'Username');
+    const password = requireText(req.body.password, 'Password');
+    const balance = optionalNumber(req.body.balance, 'Balance');
+    const mtSmsQuota = optionalNumber(req.body.mtSmsQuota, 'SMS quota');
+    const httpThroughput = optionalNumber(req.body.throughput, 'Throughput');
+    const s = await gateway.snapshot(true);
+    // jCLI silently overwrites an existing UID, so refuse explicitly.
+    if (s.users.some((u) => u.uid === uid)) throw new HttpError(409, `User ${uid} already exists`);
+    if (!s.groups.some((g) => g.gid === gid)) throw new HttpError(400, `Group ${gid} does not exist; create it first`);
+    await change(req, res, `User ${uid} created`, (c) => c.createUser({ uid, gid, username, password, balance, mtSmsQuota, httpThroughput }));
+  })
+);
+
+app.patch(
+  '/api/users/:uid', write,
+  route(async (req, res) => {
+    const uid = requireId(req.params.uid, 'User ID');
+    const updates: string[] = [];
+    const balance = optionalNumber(req.body.balance, 'Balance');
+    const quota = optionalNumber(req.body.mtSmsQuota, 'SMS quota');
+    const throughput = optionalNumber(req.body.throughput, 'Throughput');
+    if (balance !== undefined) updates.push(`mt_messaging_cred quota balance ${balance}`);
+    if (quota !== undefined) updates.push(`mt_messaging_cred quota sms_count ${quota}`);
+    if (throughput !== undefined) updates.push(`mt_messaging_cred quota http_throughput ${throughput}`);
+    if (req.body.password) updates.push(`password ${requireText(req.body.password, 'Password')}`);
+    if (!updates.length) throw new HttpError(400, 'Nothing to update');
+    await change(req, res, `User ${uid} updated`, (c) => c.updateUser(uid, updates));
+  })
+);
+
+app.delete(
+  '/api/users/:uid', write,
+  route(async (req, res) => {
+    const uid = requireId(req.params.uid, 'User ID');
+    await change(req, res, `User ${uid} removed`, (c) => c.deleteUser(uid));
+  })
+);
+
+// --- Connectors ------------------------------------------------------------------------------
+app.post(
+  '/api/connectors/http', write,
+  route(async (req, res) => {
+    const cid = requireId(req.body.cid, 'Connector ID');
+    const url = requireText(req.body.url, 'URL');
+    if (!/^https?:\/\/\S+$/i.test(url)) throw new HttpError(400, 'URL must start with http:// or https://');
+    const method = String(req.body.method || 'POST').toUpperCase();
+    if (!['GET', 'POST'].includes(method)) throw new HttpError(400, 'Method must be GET or POST');
+    await change(req, res, `HTTP connector ${cid} created`, (c) => c.createHttpConnector(cid, url, method));
+  })
+);
+
+app.delete(
+  '/api/connectors/http/:cid', write,
+  route(async (req, res) => {
+    const cid = requireId(req.params.cid, 'Connector ID');
+    const s = await gateway.snapshot(true);
+    const users = s.moRoutes.filter((r) => r.connectors.includes(`http(${cid})`));
+    if (users.length && req.query.force !== '1') {
+      throw new HttpError(409, `http(${cid}) is used by MO route(s) ${users.map((r) => '#' + r.order).join(', ')}`);
+    }
+    await change(req, res, `HTTP connector ${cid} removed`, (c) => c.deleteHttpConnector(cid));
+  })
+);
+
+app.post(
+  '/api/connectors/smpp', write,
+  route(async (req, res) => {
+    const cid = requireId(req.body.cid, 'Connector ID');
+    const host = requireText(req.body.host, 'Host');
+    const port = optionalNumber(req.body.port, 'Port');
+    if (!port || port > 65535) throw new HttpError(400, 'Port must be 1-65535');
+    const username = requireText(req.body.username, 'System ID');
+    const password = requireText(req.body.password, 'Password');
+    const s = await gateway.snapshot(true);
+    if (s.smppConnectors.some((c) => c.cid === cid)) throw new HttpError(409, `Connector ${cid} already exists`);
+    await change(req, res, `SMPP connector ${cid} created`, (c) =>
+      c.createSmppConnector({ cid, host, port, username, password, systemType: req.body.systemType || undefined })
+    );
+  })
+);
+
+app.post(
+  '/api/connectors/smpp/:cid/:action(start|stop)', write,
+  route(async (req, res) => {
+    const cid = requireId(req.params.cid, 'Connector ID');
+    const start = req.params.action === 'start';
+    await change(req, res, `Connector ${cid} ${start ? 'started' : 'stopped'}`, (c) => (start ? c.startSmppConnector(cid) : c.stopSmppConnector(cid)));
+  })
+);
+
+app.delete(
+  '/api/connectors/smpp/:cid', write,
+  route(async (req, res) => {
+    const cid = requireId(req.params.cid, 'Connector ID');
+    const s = await gateway.snapshot(true);
+    const routes = s.mtRoutes.filter((r) => r.connectors.includes(`smppc(${cid})`));
+    // Jasmin removes the connector anyway and leaves routes pointing at nothing.
+    if (routes.length && req.query.force !== '1') {
+      throw new HttpError(409, `smppc(${cid}) is used by MT route(s) ${routes.map((r) => '#' + r.order).join(', ')}. Remove or rewire them first.`);
+    }
+    await change(req, res, `SMPP connector ${cid} removed`, (c) => c.deleteSmppConnector(cid));
+  })
+);
+
+// --- Filters & routes ------------------------------------------------------------------------
+app.post(
+  '/api/filters', write,
+  route(async (req, res) => {
+    const fid = requireId(req.body.fid, 'Filter ID');
+    const type = String(req.body.type || '');
+    const spec = FILTER_PARAM[type];
+    if (!spec) throw new HttpError(400, `Unsupported filter type ${type}`);
+    const value = spec.key ? requireText(req.body.value, 'Filter value') : '';
+    const s = await gateway.snapshot(true);
+    if (s.filters.some((f) => f.fid === fid)) throw new HttpError(409, `Filter ${fid} already exists`);
+    await change(req, res, `Filter ${fid} created`, (c) => c.createFilter(fid, type, spec.key, value));
+  })
+);
+
+app.delete(
+  '/api/filters/:fid', write,
+  route(async (req, res) => {
+    const fid = requireId(req.params.fid, 'Filter ID');
+    await change(req, res, `Filter ${fid} removed`, (c) => c.deleteFilter(fid));
+  })
+);
+
+const parseList = (v: unknown) =>
+  (Array.isArray(v) ? v : String(v ?? '').split(/[;,]/)).map((x) => String(x).trim()).filter(Boolean);
+
+app.post(
+  '/api/routes/mt', write,
+  route(async (req, res) => {
+    const type = String(req.body.type || '');
+    if (!['DefaultRoute', 'StaticMTRoute', 'RandomRoundrobinMTRoute', 'FailoverMTRoute'].includes(type)) throw new HttpError(400, `Unsupported MT route type ${type}`);
+    const order = type === 'DefaultRoute' ? 0 : Number(req.body.order);
+    if (type !== 'DefaultRoute' && (!Number.isInteger(order) || order < 1)) throw new HttpError(400, 'Order must be an integer ≥ 1 (0 is reserved for DefaultRoute)');
+    const rate = optionalNumber(req.body.rate, 'Rate') ?? 0;
+    const connectors = parseList(req.body.connectors ?? req.body.connector);
+    const filters = parseList(req.body.filters);
+    if (!connectors.length) throw new HttpError(400, 'At least one connector is required');
+    if (type !== 'DefaultRoute' && !filters.length) throw new HttpError(400, `${type} requires at least one filter`);
+    const s = await gateway.snapshot(true);
+    if (s.mtRoutes.some((r) => r.order === order) && req.query.replace !== '1') throw new HttpError(409, `MT route #${order} already exists`);
+    await change(req, res, `MT route #${order} saved`, (c) => c.createMtRoute(type, rate, connectors, order, filters));
+  })
+);
+
+app.delete(
+  '/api/routes/mt/:order', write,
+  route(async (req, res) => {
+    const order = Number(req.params.order);
+    await change(req, res, `MT route #${order} removed`, (c) => c.deleteMtRoute(order));
+  })
+);
+
+app.post(
+  '/api/routes/mo', write,
+  route(async (req, res) => {
+    const type = String(req.body.type || '');
+    if (!['DefaultRoute', 'StaticMORoute', 'RandomRoundrobinMORoute', 'FailoverMORoute'].includes(type)) throw new HttpError(400, `Unsupported MO route type ${type}`);
+    const order = type === 'DefaultRoute' ? 0 : Number(req.body.order);
+    if (type !== 'DefaultRoute' && (!Number.isInteger(order) || order < 1)) throw new HttpError(400, 'Order must be an integer ≥ 1');
+    const connectors = parseList(req.body.connectors ?? req.body.connector);
+    const filters = parseList(req.body.filters);
+    if (!connectors.length) throw new HttpError(400, 'At least one connector is required');
+    if (type !== 'DefaultRoute' && !filters.length) throw new HttpError(400, `${type} requires at least one filter`);
+    await change(req, res, `MO route #${order} saved`, (c) => c.createMoRoute(type, connectors, order, filters));
+  })
+);
+
+app.delete(
+  '/api/routes/mo/:order', write,
+  route(async (req, res) => {
+    const order = Number(req.params.order);
+    await change(req, res, `MO route #${order} removed`, (c) => c.deleteMoRoute(order));
+  })
+);
+
+app.post(
+  '/api/routes/simulate', read,
+  route(async (req, res) => {
+    const destination = requireText(req.body.destination_addr, 'Recipient');
+    const tags = parseList(req.body.tags).map(Number).filter(Number.isFinite);
+    const s = await gateway.snapshot();
+    res.json(
+      simulateMtRouting(s, {
+        uid: req.body.uid || undefined,
+        source_addr: req.body.source_addr || '',
+        destination_addr: destination,
+        text: req.body.text || '',
+        tags
+      })
+    );
+  })
+);
+
+// --- Flow editor -----------------------------------------------------------------------------
+app.get(
+  '/api/topology', read,
+  route(async (_req, res) => {
+    const s = await gateway.snapshot(true);
+    res.json({ fetchedAt: s.fetchedAt, ...buildTopology(s, { httpPort: HTTP_API_PORT, smppPort: SMPP_SERVER_PORT }) });
+  })
+);
+
+const readGraph = (body: any): FlowGraph => {
+  if (!body || !Array.isArray(body.nodes) || !Array.isArray(body.connections)) throw new HttpError(400, 'Body must contain nodes[] and connections[]');
+  return { nodes: body.nodes, connections: body.connections };
+};
+
+app.post(
+  '/api/topology/plan', read,
+  route(async (req, res) => {
+    const s = await gateway.snapshot(true);
+    res.json(describePlan(planDeploy(readGraph(req.body), s, { prune: req.body.prune !== false })));
+  })
+);
+
+app.post(
+  '/api/topology/deploy', write,
+  route(async (req, res) => {
+    const graph = readGraph(req.body);
+    const s = await gateway.snapshot(true);
+    const plan = planDeploy(graph, s, { prune: req.body.prune !== false });
+    if (plan.errors.length) return res.status(400).json({ error: 'The flow has problems that must be fixed before deploying', errors: plan.errors });
+    if (!plan.steps.length) return res.json({ success: true, applied: [], message: 'Nothing to deploy: the gateway already matches the flow' });
+    try {
+      const { result } = await gateway.mutate((c) => applyPlan(c, plan));
+      auth.audit(req, 'flow-deployed', `${result.length} change(s)`, { applied: result.map((r) => `${r.action} ${r.kind} ${r.id}`) });
+      res.json({ success: true, applied: result, message: `Deployed ${result.length} change(s) and persisted` });
+    } catch (err: any) {
+      auth.audit(req, 'flow-deploy-failed', undefined, { error: err.message });
+      res.status(422).json({ error: err.message, applied: err.done ?? [] });
+    }
+  })
+);
+
+// --- Traffic, SMS & system -------------------------------------------------------------------
+app.get('/api/traffic', auth.require('traffic:read'), (req, res) => {
+  const limit = Math.min(parseInt(String(req.query.limit), 10) || 200, 2000);
+  const messages = amqpTap.getMessages(limit, String(req.query.q || ''), String(req.query.status || '')).map((m) => maskTraffic(m, req.user?.role));
+  res.json({ messages, stats: amqpTap.getStats(), connected: amqpTap.connected });
+});
+
+app.get('/api/traffic/:msgid', auth.require('traffic:read'), (req, res) => {
+  const msg = amqpTap.getMessageById(req.params.msgid);
+  if (!msg) return res.status(404).json({ error: 'Message not found in the live buffer' });
+  res.json(maskTraffic(msg, req.user?.role));
+});
+
+app.delete('/api/traffic', write, (_req, res) => {
+  amqpTap.clear();
+  res.json({ success: true });
+});
+
+app.post(
+  '/api/sms/send', auth.require('sms:send'),
+  route(async (req, res) => {
+    const username = requireText(req.body.username, 'Username');
+    const password = requireText(req.body.password, 'Password');
+    const to = requireText(req.body.to, 'Recipient');
+    const content = String(req.body.content ?? '');
+    if (!content) throw new HttpError(400, 'Message content is required');
+    const params = new URLSearchParams({ username, password, to, content });
+    if (req.body.from) params.set('from', String(req.body.from));
+    if (req.body.dlr) {
+      params.set('dlr', 'yes');
+      params.set('dlr-level', '3');
+      params.set('dlr-url', String(req.body.dlrUrl || 'http://127.0.0.1/'));
+    }
+    let response: globalThis.Response;
+    try {
+      response = await fetch(`${HTTP_API_URL}/send`, { method: 'POST', body: params, signal: AbortSignal.timeout(10000) });
+    } catch (err: any) {
+      throw new HttpError(503, `Jasmin HTTP API (${HTTP_API_URL}) unreachable: ${err.message}`);
+    }
+    const text = (await response.text()).trim();
+    const id = /^Success "([^"]+)"/.exec(text)?.[1];
+    res.json({ success: response.ok && !!id, status: response.status, response: text, messageId: id ?? null });
+  })
+);
+
+app.get(
+  '/api/system/export', read,
+  route(async (_req, res) => {
+    const s = await gateway.snapshot(true);
+    const { stats, fetchedAt, ...config } = s;
+    res.setHeader('Content-Disposition', `attachment; filename="jasmin-snapshot-${new Date().toISOString().slice(0, 19).replace(/:/g, '')}.json"`);
+    res.json({ format: 'jasmin-console-snapshot/1', jasminVersion: gateway.version, exportedAt: new Date().toISOString(), gateway: config });
+  })
+);
+
+app.post(
+  '/api/system/persist', write,
+  route(async (req, res) => {
+    const { persisted } = await gateway.mutate(async () => undefined);
+    auth.audit(req, 'gateway-persisted');
+    res.json({ success: true, log: persisted });
+  })
+);
+
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API endpoint' }));
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('[api]', err);
+  res.status(500).json({ error: err?.message || 'Internal error' });
+});
+
+// --- WebSockets ------------------------------------------------------------------------------
+const wssTelemetry = new WebSocketServer({ noServer: true });
+const wssTerminal = new WebSocketServer({ noServer: true });
+
+const wsUser = new WeakMap<WebSocket, { username: string; role: Role | null }>();
+
+server.on('upgrade', (req, socket, head) => {
+  const reject = (code: string) => {
+    socket.write(`HTTP/1.1 ${code}\r\n\r\n`);
+    socket.destroy();
+  };
+  // Browsers always send Origin on WebSocket handshakes: refuse cross-site hijacking attempts.
+  const origin = req.headers.origin;
+  if (origin && new URL(origin).host !== req.headers.host) return reject('403 Forbidden');
+  const session = auth.resolve(req.headers.cookie);
+  if (!session || session.user.status !== 'active') return reject('401 Unauthorized');
+  const pathname = (req.url || '').split('?')[0];
+  const target = pathname === '/ws/telemetry' ? wssTelemetry : pathname === '/ws/terminal' ? wssTerminal : null;
+  if (!target) return reject('404 Not Found');
+  const needed = target === wssTerminal ? 'terminal:use' : 'gateway:read';
+  if (!can(session.user.role, needed) || (target === wssTerminal && session.user.mustChangePassword)) return reject('403 Forbidden');
+  target.handleUpgrade(req, socket, head, (ws) => {
+    wsUser.set(ws, { username: session.user.username, role: session.user.role });
+    target.emit('connection', ws, req);
   });
 });
 
-// Periodic live telemetry broadcast (every 2.5s)
+function broadcast(payload: unknown) {
+  const msg = JSON.stringify(payload);
+  for (const client of wssTelemetry.clients) if (client.readyState === WebSocket.OPEN) client.send(msg);
+}
+
+amqpTap.onMessage((message, isUpdate) => {
+  const type = isUpdate ? 'traffic:update' : 'traffic:new';
+  for (const client of wssTelemetry.clients) {
+    if (client.readyState !== WebSocket.OPEN) continue;
+    client.send(JSON.stringify({ type, data: maskTraffic(message, wsUser.get(client)?.role) }));
+  }
+});
+
+let telemetryBusy = false;
 setInterval(async () => {
-  if (wssTelemetry.clients.size === 0) return;
+  if (wssTelemetry.clients.size === 0 || telemetryBusy) return;
+  telemetryBusy = true;
   try {
-    const stats = await jcli.getStats();
-    broadcastTelemetry({
-      type: 'STATS_UPDATE',
-      data: {
-        ...stats,
-        trafficStats: amqpTap.getStats()
-      }
-    });
+    const stats = await gateway.stats();
+    broadcast({ type: 'stats', at: Date.now(), data: { ...stats, traffic: amqpTap.getStats() } });
+    broadcast({ type: 'status', data: { jcli: true, amqp: amqpTap.connected, version: gateway.version } });
   } catch (err: any) {
-    // Ignore transient errors
+    broadcast({ type: 'status', data: { jcli: false, amqp: amqpTap.connected, version: gateway.version, error: err.message } });
+  } finally {
+    telemetryBusy = false;
   }
 }, 2500);
 
-// --- WebSocket Upgrade Router ---
-server.on('upgrade', (request, socket, head) => {
-  const pathname = request.url?.split('?')[0];
+/**
+ * Web terminal: bridges xterm.js to a dedicated jCLI telnet session.
+ * Frames are JSON: client -> {t:'input', d} ; server -> {t:'data', d} | {t:'status', state, ...}.
+ */
+wssTerminal.on('connection', (ws, req: http.IncomingMessage) => {
+  const who = wsUser.get(ws)?.username ?? 'unknown';
+  const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  auth.store.audit({ actor: who, action: 'terminal-opened', ip });
+  let line = '';
+  const tcp = new net.Socket();
+  let ready = false;
+  let buf = '';
+  const send = (obj: unknown) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(obj));
 
-  if (pathname === '/ws' || pathname === '/ws/telemetry') {
-    wssTelemetry.handleUpgrade(request, socket, head, (ws) => {
-      wssTelemetry.emit('connection', ws, request);
-    });
-  } else if (pathname === '/ws/terminal') {
-    wssTerminal.handleUpgrade(request, socket, head, (ws) => {
-      wssTerminal.emit('connection', ws, request);
-    });
-  } else {
-    socket.destroy();
-  }
-});
+  send({ t: 'status', state: 'connecting', host: JCLI_HOST, port: JCLI_PORT });
+  tcp.setTimeout(10000);
+  tcp.connect(JCLI_PORT, JCLI_HOST);
 
-// --- Interactive Web jCLI Terminal Proxy ---
-wssTerminal.on('connection', (ws) => {
-  const tcpSocket = new net.Socket();
-  let isAuthenticated = false;
-  let authBuffer = '';
-
-  tcpSocket.connect(JCLI_PORT, JCLI_HOST, () => {
-    ws.send('\x1b[36m[Connecting to Jasmin jCLI Console at ' + JCLI_HOST + ':' + JCLI_PORT + '...]\x1b[0m\r\n');
+  tcp.on('data', (chunk) => {
+    // jCLI ends lines with "\r\r\r\n" and pads table rows with trailing spaces wider than the
+    // terminal (which then wrap into blank lines): normalise to CRLF without trailing blanks.
+    const text = chunk.toString('utf8').replace(/[ \t]*\r+\n/g, '\r\n');
+    if (ready) return send({ t: 'data', d: text });
+    buf += text;
+    if (/Incorrect|Authentication failed/i.test(buf)) {
+      send({ t: 'status', state: 'error', message: 'jCLI rejected the console credentials (JCLI_ADMIN_USERNAME / password).' });
+      tcp.destroy();
+    } else if (/Authentication required|Username:\s*$/.test(buf) && !/Password:/.test(buf)) {
+      buf = buf.replace(/Authentication required\.?/, '');
+      tcp.write(`${JCLI_USERNAME}\r\n`);
+    } else if (/Password:\s*$/.test(buf)) {
+      buf = '';
+      tcp.write(`${JCLI_PASSWORD}\r\n`);
+    } else if (/jcli : $/.test(buf)) {
+      ready = true;
+      tcp.setTimeout(0);
+      const version = buf.match(/Welcome to Jasmin ([\w.\-]+)/)?.[1] ?? null;
+      const session = buf.match(/Session ref: (\d+)/)?.[1] ?? null;
+      send({ t: 'status', state: 'ready', version, session, host: JCLI_HOST, port: JCLI_PORT });
+      // Show the banner without the login noise.
+      const banner = buf.slice(Math.max(0, buf.indexOf('Welcome to Jasmin'))).replace(/\r+\n/g, '\r\n');
+      send({ t: 'data', d: banner });
+      buf = '';
+    }
   });
 
-  tcpSocket.on('data', (data) => {
-    const text = data.toString('utf-8');
+  tcp.on('timeout', () => {
+    send({ t: 'status', state: 'error', message: `No answer from jCLI at ${JCLI_HOST}:${JCLI_PORT}` });
+    tcp.destroy();
+  });
+  tcp.on('error', (err) => send({ t: 'status', state: 'error', message: `Cannot reach jCLI at ${JCLI_HOST}:${JCLI_PORT} (${err.message})` }));
+  tcp.on('close', () => {
+    send({ t: 'status', state: 'closed' });
+    if (ws.readyState === WebSocket.OPEN) ws.close();
+  });
 
-    if (!isAuthenticated) {
-      authBuffer += text;
-      if (authBuffer.includes('Authentication required') || authBuffer.includes('Username:')) {
-        tcpSocket.write(`${JCLI_USERNAME}\n`);
-        authBuffer = '';
-      } else if (authBuffer.includes('Password:')) {
-        tcpSocket.write(`${JCLI_PASSWORD}\n`);
-        authBuffer = '';
-      } else if (authBuffer.includes('Welcome to Jasmin') || authBuffer.includes('jcli :')) {
-        isAuthenticated = true;
-        ws.send(data);
-      } else if (authBuffer.includes('Incorrect') || authBuffer.includes('Authentication failed')) {
-        ws.send('\r\n\x1b[31mjCLI Authentication Failed: check credentials.\x1b[0m\r\n');
-        tcpSocket.destroy();
-        ws.close();
+  ws.on('message', (raw) => {
+    let msg: any;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+    if (msg?.t === 'input' && ready && typeof msg.d === 'string' && !tcp.destroyed) {
+      tcp.write(msg.d);
+      // Audit each submitted command line; secrets typed into jCLI are redacted.
+      for (const ch of msg.d) {
+        if (ch === '\r' || ch === '\n') {
+          const cmd = line.trim();
+          if (cmd) auth.store.audit({ actor: who, action: 'terminal-command', target: /^(password|.*_password)\b/i.test(cmd) ? cmd.split(/\s+/)[0] + ' ••••' : cmd, ip });
+          line = '';
+        } else if (ch === '\x7f' || ch === '\b') line = line.slice(0, -1);
+        else if (ch >= ' ') line += ch;
       }
-    } else {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-      }
     }
   });
-
-  tcpSocket.on('error', (err) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(`\r\n\x1b[31m[TCP Error: ${err.message}]\x1b[0m\r\n`);
-      ws.close();
-    }
-  });
-
-  tcpSocket.on('close', () => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send('\r\n\x1b[33m[jCLI Session Closed]\x1b[0m\r\n');
-      ws.close();
-    }
-  });
-
-  ws.on('message', (msg) => {
-    if (isAuthenticated && !tcpSocket.destroyed) {
-      tcpSocket.write(msg.toString());
-    }
-  });
-
   ws.on('close', () => {
-    tcpSocket.destroy();
+    tcp.destroy();
+    auth.store.audit({ actor: who, action: 'terminal-closed', ip });
   });
 });
 
-// --- REST Endpoints ---
-
-// 1. Overview & System Telemetry
-app.get('/api/overview', async (req, res) => {
-  try {
-    const [stats, users, groups, httpConns, smppConns, moRoutes, mtRoutes] = await Promise.all([
-      jcli.getStats(),
-      jcli.getUsers(),
-      jcli.getGroups(),
-      jcli.getHttpConnectors(),
-      jcli.getSmppConnectors(),
-      jcli.getMoRoutes(),
-      jcli.getMtRoutes()
-    ]);
-
-    res.json({
-      timestamp: new Date().toISOString(),
-      jcliStatus: 'CONNECTED',
-      stats,
-      counts: {
-        users: users.length,
-        groups: groups.length,
-        httpConnectors: httpConns.length,
-        smppConnectors: smppConns.length,
-        moRoutes: moRoutes.length,
-        mtRoutes: mtRoutes.length
-      },
-      trafficStats: amqpTap.getStats()
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message, jcliStatus: 'DISCONNECTED' });
-  }
-});
-
-// 2. Configuration Explorer (jasmin.cfg)
-app.get('/api/config', (req, res) => {
-  res.json(configReader.getConfig());
-});
-
-// 3. User & Group Management
-app.get('/api/users', async (req, res) => {
-  try {
-    const users = await jcli.getUsers();
-    res.json(users);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/users', async (req, res) => {
-  const { uid, gid, username, password, balance, mtSmsQuota, throughput } = req.body;
-  if (!uid || !gid || !username || !password) {
-    return res.status(400).json({ error: 'uid, gid, username, and password are required' });
-  }
-
-  try {
-    await jcli.createUser({
-      uid,
-      gid,
-      username,
-      password,
-      balance: balance ? parseFloat(balance) : undefined,
-      mtSmsQuota: mtSmsQuota ? parseInt(mtSmsQuota, 10) : undefined,
-      httpThroughput: throughput ? parseInt(throughput, 10) : undefined
-    });
-    res.json({ success: true, uid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/users/:uid', async (req, res) => {
-  try {
-    await jcli.deleteUser(req.params.uid);
-    res.json({ success: true, uid: req.params.uid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/groups', async (req, res) => {
-  try {
-    const groups = await jcli.getGroups();
-    res.json(groups);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/groups', async (req, res) => {
-  const { gid } = req.body;
-  if (!gid) return res.status(400).json({ error: 'gid is required' });
-
-  try {
-    await jcli.createGroup(gid);
-    res.json({ success: true, gid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 4. Connectors Management (HTTP & SMPP)
-app.get('/api/connectors/http', async (req, res) => {
-  try {
-    const connectors = await jcli.getHttpConnectors();
-    res.json(connectors);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/connectors/http', async (req, res) => {
-  const { cid, url, method } = req.body;
-  if (!cid || !url) return res.status(400).json({ error: 'cid and url are required' });
-
-  try {
-    await jcli.createHttpConnector(cid, url, method || 'POST');
-    res.json({ success: true, cid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/connectors/http/:cid', async (req, res) => {
-  try {
-    await jcli.deleteHttpConnector(req.params.cid);
-    res.json({ success: true, cid: req.params.cid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/connectors/smpp', async (req, res) => {
-  try {
-    const connectors = await jcli.getSmppConnectors();
-    res.json(connectors);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/connectors/smpp', async (req, res) => {
-  const { cid, host, port, username, password, systemType } = req.body;
-  if (!cid || !host || !port || !username || !password) {
-    return res.status(400).json({ error: 'cid, host, port, username, and password are required' });
-  }
-
-  try {
-    await jcli.createSmppConnector({
-      cid,
-      host,
-      port: parseInt(port, 10),
-      username,
-      password,
-      systemType
-    });
-    res.json({ success: true, cid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/connectors/smpp/:cid/start', async (req, res) => {
-  try {
-    await jcli.startSmppConnector(req.params.cid);
-    res.json({ success: true, cid: req.params.cid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/connectors/smpp/:cid/stop', async (req, res) => {
-  try {
-    await jcli.stopSmppConnector(req.params.cid);
-    res.json({ success: true, cid: req.params.cid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/connectors/smpp/:cid', async (req, res) => {
-  try {
-    await jcli.deleteSmppConnector(req.params.cid);
-    res.json({ success: true, cid: req.params.cid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 5. Routing Engine (MO & MT)
-app.get('/api/routes/mo', async (req, res) => {
-  try {
-    const routes = await jcli.getMoRoutes();
-    res.json(routes);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/routes/mo', async (req, res) => {
-  const { type, connector, order, filters } = req.body;
-  if (!type || !connector) {
-    return res.status(400).json({ error: 'type and connector are required' });
-  }
-
-  try {
-    await jcli.createMoRoute(type, connector, order ? parseInt(order, 10) : 0, filters || []);
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/routes/mo/:order', async (req, res) => {
-  try {
-    await jcli.deleteMoRoute(parseInt(req.params.order, 10));
-    res.json({ success: true, order: req.params.order });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/routes/mt', async (req, res) => {
-  try {
-    const routes = await jcli.getMtRoutes();
-    res.json(routes);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/routes/mt', async (req, res) => {
-  const { type, rate, connector, order, filters } = req.body;
-  if (!type || !connector) {
-    return res.status(400).json({ error: 'type and connector are required' });
-  }
-
-  try {
-    await jcli.createMtRoute(
-      type,
-      rate ? parseFloat(rate) : 0,
-      connector,
-      order ? parseInt(order, 10) : 0,
-      filters || []
-    );
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/routes/mt/:order', async (req, res) => {
-  try {
-    await jcli.deleteMtRoute(parseInt(req.params.order, 10));
-    res.json({ success: true, order: req.params.order });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Update MT Route (for Node-RED style visual rewiring)
-app.put('/api/routes/mt/:order', async (req, res) => {
-  const currentOrder = parseInt(req.params.order, 10);
-  const { type, rate, connector, filters, newOrder } = req.body;
-
-  try {
-    // Jasmin replaces routes by removing and re-adding at the given priority order
-    await jcli.deleteMtRoute(currentOrder);
-    await jcli.createMtRoute(
-      type || 'StaticMTRoute',
-      rate !== undefined ? parseFloat(rate) : 0,
-      connector,
-      newOrder !== undefined ? parseInt(newOrder, 10) : currentOrder,
-      filters || []
-    );
-    res.json({ success: true, order: newOrder !== undefined ? newOrder : currentOrder });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Interactive Route Match Simulator
-app.post('/api/routes/simulate', async (req, res) => {
-  const { uid, source_addr, destination_addr, text } = req.body;
-  if (!destination_addr) {
-    return res.status(400).json({ error: 'destination_addr is required' });
-  }
-
-  try {
-    const [filters, mtRoutes, users] = await Promise.all([
-      jcli.getFilters(),
-      jcli.getMtRoutes(),
-      jcli.getUsers()
-    ]);
-
-    const user = uid ? users.find((u) => u.uid === uid) : undefined;
-    const filterMap = new Map(filters.map((f) => [f.fid, f]));
-
-    const trace: Array<{
-      order: number;
-      type: string;
-      connector: string;
-      filtersEvaluated: Array<{ fid: string; matched: boolean; reason: string }>;
-      routeMatched: boolean;
-    }> = [];
-
-    let winningRoute: any = null;
-
-    for (const route of mtRoutes) {
-      let allPassed = true;
-      const filtersEvaluated: Array<{ fid: string; matched: boolean; reason: string }> = [];
-
-      for (const fid of route.filters) {
-        const filter = filterMap.get(fid);
-        if (!filter) {
-          filtersEvaluated.push({ fid, matched: false, reason: 'Filter ID not found' });
-          allPassed = false;
-          break;
-        }
-
-        let matched = false;
-        let reason = '';
-        const typeLower = filter.type.toLowerCase();
-
-        if (typeLower.includes('transparent')) {
-          matched = true;
-          reason = 'Transparent filter matches all traffic';
-        } else if (typeLower.includes('user')) {
-          matched = Boolean(uid && (filter.routes === uid || filter.description?.includes(uid)));
-          reason = matched ? `User matches '${uid}'` : `User does not match filter '${filter.routes}'`;
-        } else if (typeLower.includes('group')) {
-          matched = Boolean(user && (filter.routes === user.gid || filter.description?.includes(user.gid)));
-          reason = matched ? `User group '${user?.gid}' matches` : `User group does not match filter '${filter.routes}'`;
-        } else if (typeLower.includes('sourceaddr')) {
-          try {
-            const re = new RegExp(filter.description || filter.routes || '.*');
-            matched = re.test(source_addr || '');
-            reason = matched ? `Regex matched sender: ${source_addr}` : `Regex did not match sender: ${source_addr}`;
-          } catch (e: any) {
-            matched = false;
-            reason = `Invalid regex in filter: ${e.message}`;
-          }
-        } else if (typeLower.includes('destinationaddr')) {
-          try {
-            const re = new RegExp(filter.description || filter.routes || '.*');
-            matched = re.test(destination_addr);
-            reason = matched ? `Regex matched recipient: ${destination_addr}` : `Regex did not match recipient: ${destination_addr}`;
-          } catch (e: any) {
-            matched = false;
-            reason = `Invalid regex in filter: ${e.message}`;
-          }
-        } else if (typeLower.includes('shortmessage')) {
-          try {
-            const re = new RegExp(filter.description || filter.routes || '.*');
-            matched = re.test(text || '');
-            reason = matched ? `Regex matched message body` : `Regex did not match message body`;
-          } catch (e: any) {
-            matched = false;
-            reason = `Invalid regex in filter: ${e.message}`;
-          }
-        } else {
-          matched = true;
-          reason = `${filter.type} matched for simulation`;
-        }
-
-        filtersEvaluated.push({ fid, matched, reason });
-        if (!matched) {
-          allPassed = false;
-          break;
-        }
-      }
-
-      trace.push({
-        order: route.order,
-        type: route.type,
-        connector: route.connector,
-        filtersEvaluated,
-        routeMatched: allPassed
-      });
-
-      if (allPassed && !winningRoute) {
-        winningRoute = route;
-      }
-    }
-
-    res.json({
-      matched: Boolean(winningRoute),
-      winningRoute,
-      targetConnector: winningRoute ? winningRoute.connector : null,
-      trace
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 6. Filters Management
-app.get('/api/filters', async (req, res) => {
-  try {
-    const filters = await jcli.getFilters();
-    res.json(filters);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/filters', async (req, res) => {
-  const { fid, type, paramKey, paramValue } = req.body;
-  if (!fid || !type || !paramKey || !paramValue) {
-    return res.status(400).json({ error: 'fid, type, paramKey, and paramValue are required' });
-  }
-
-  try {
-    await jcli.createFilter(fid, type, paramKey, paramValue);
-    res.json({ success: true, fid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/filters/:fid', async (req, res) => {
-  try {
-    await jcli.deleteFilter(req.params.fid);
-    res.json({ success: true, fid: req.params.fid });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/filters/validate-regex', (req, res) => {
-  const { pattern, sample } = req.body;
-  if (!pattern) return res.status(400).json({ error: 'pattern is required' });
-  try {
-    const re = new RegExp(pattern);
-    const matches = sample !== undefined ? re.test(sample) : true;
-    res.json({ valid: true, matches });
-  } catch (err: any) {
-    res.json({ valid: false, error: err.message });
-  }
-});
-
-// 7. Interceptors
-app.get('/api/interceptors', async (req, res) => {
-  try {
-    const [mt, mo] = await Promise.all([
-      jcli.getMtInterceptors(),
-      jcli.getMoInterceptors()
-    ]);
-    res.json({ mt, mo });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 8. Real-Time AMQP Message Traffic & DLR Monitor
-app.get('/api/traffic', (req, res) => {
-  const limit = parseInt(req.query.limit as string, 10) || 100;
-  const query = (req.query.q as string) || '';
-  const status = (req.query.status as string) || '';
-  res.json({
-    messages: amqpTap.getMessages(limit, query, status),
-    stats: amqpTap.getStats()
-  });
-});
-
-app.get('/api/traffic/:msgid', (req, res) => {
-  const msg = amqpTap.getMessageById(req.params.msgid);
-  if (!msg) return res.status(404).json({ error: 'Message ID not found in ring buffer' });
-  res.json(msg);
-});
-
-app.delete('/api/traffic', (req, res) => {
-  amqpTap.clear();
-  res.json({ success: true, message: 'Traffic ring buffer cleared' });
-});
-
-// 9. Test SMS Injection via Jasmin HTTP API (Port 1401)
-app.post('/api/sms/send', async (req, res) => {
-  const { username, password, to, content, from } = req.body;
-  if (!username || !password || !to || !content) {
-    return res.status(400).json({ error: 'username, password, to, and content are required' });
-  }
-
-  try {
-    const params = new URLSearchParams({
-      username,
-      password,
-      to,
-      content,
-      from: from || 'JASMIN'
-    });
-
-    const response = await fetch(`${HTTP_API_URL}/send?${params.toString()}`);
-    const text = await response.text();
-
-    res.json({
-      status: response.status,
-      response: text,
-      success: response.status === 200 && text.startsWith('Success')
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: `HTTP API error: ${err.message}` });
-  }
-});
-
-// 10. Gateway State Snapshot Export & Restore
-app.get('/api/system/export', async (req, res) => {
-  try {
-    const [users, groups, httpConns, smppConns, filters, moRoutes, mtRoutes] = await Promise.all([
-      jcli.getUsers(),
-      jcli.getGroups(),
-      jcli.getHttpConnectors(),
-      jcli.getSmppConnectors(),
-      jcli.getFilters(),
-      jcli.getMoRoutes(),
-      jcli.getMtRoutes()
-    ]);
-
-    const snapshot = {
-      version: '1.0.0',
-      exportedAt: new Date().toISOString(),
-      gateway: {
-        groups,
-        users,
-        httpConnectors: httpConns,
-        smppConnectors: smppConns,
-        filters,
-        moRoutes,
-        mtRoutes
-      }
-    };
-
-    res.setHeader('Content-Disposition', `attachment; filename="jasmin-backup-${Date.now()}.json"`);
-    res.setHeader('Content-Type', 'application/json');
-    res.send(JSON.stringify(snapshot, null, 2));
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 11. System Persistence (persist & load)
-app.post('/api/system/persist', async (req, res) => {
-  try {
-    const result = await jcli.persist();
-    res.json({ success: true, log: result });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/system/load', async (req, res) => {
-  try {
-    const result = await jcli.load();
-    res.json({ success: true, log: result });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 12. Topology DAG Aggregator (Node-RED / Telecom Flow Engine)
-app.get('/api/topology', async (req, res) => {
-  try {
-    const [users, groups, filters, moRoutes, mtRoutes, smppConns, httpConns, mtInterceptors] = await Promise.all([
-      jcli.getUsers().catch(() => []),
-      jcli.getGroups().catch(() => []),
-      jcli.getFilters().catch(() => []),
-      jcli.getMoRoutes().catch(() => []),
-      jcli.getMtRoutes().catch(() => []),
-      jcli.getSmppConnectors().catch(() => []),
-      jcli.getHttpConnectors().catch(() => []),
-      jcli.getMtInterceptors().catch(() => [])
-    ]);
-
-    const nodes: any[] = [];
-    const edges: any[] = [];
-
-    // Stage 1: Ingress Nodes
-    nodes.push({
-      id: 'ingress_http',
-      type: 'ingress',
-      stage: 1,
-      label: 'HTTP REST API (:1401)',
-      data: { port: 1401, protocol: 'HTTP/REST' }
-    });
-    nodes.push({
-      id: 'ingress_smpp',
-      type: 'ingress',
-      stage: 1,
-      label: 'SMPP Server (:2775)',
-      data: { port: 2775, protocol: 'SMPP v3.4' }
-    });
-
-    // Stage 2: Users
-    for (const u of users) {
-      const uNodeId = `user_${u.uid}`;
-      nodes.push({
-        id: uNodeId,
-        type: 'user',
-        stage: 2,
-        label: `User: ${u.username}`,
-        data: u
-      });
-      edges.push({ id: `e_http_${u.uid}`, source: 'ingress_http', target: uNodeId });
-      edges.push({ id: `e_smpp_${u.uid}`, source: 'ingress_smpp', target: uNodeId });
-    }
-
-    // Stage 3: Interceptors
-    for (const ic of mtInterceptors) {
-      const icNodeId = `interceptor_${ic.order}`;
-      nodes.push({
-        id: icNodeId,
-        type: 'interceptor',
-        stage: 3,
-        label: `Interceptor #${ic.order}`,
-        data: ic
-      });
-      if (ic.order === 0) {
-        for (const u of users) {
-          edges.push({ id: `e_u_${u.uid}_ic_${ic.order}`, source: `user_${u.uid}`, target: icNodeId });
-        }
-      }
-    }
-
-    // Stage 4: Filters
-    for (const f of filters) {
-      const fNodeId = `filter_${f.fid}`;
-      nodes.push({
-        id: fNodeId,
-        type: 'filter',
-        stage: 4,
-        label: `Filter: ${f.fid}`,
-        data: f
-      });
-    }
-
-    // Stage 5: Routes
-    for (const r of mtRoutes) {
-      const rNodeId = `route_mt_${r.order}`;
-      nodes.push({
-        id: rNodeId,
-        type: 'route',
-        stage: 5,
-        label: `${r.type} #${r.order}`,
-        data: r
-      });
-
-      if (r.filters && r.filters.length > 0) {
-        for (const fid of r.filters) {
-          edges.push({ id: `e_f_${fid}_r_${r.order}`, source: `filter_${fid}`, target: rNodeId });
-        }
-      } else if (users.length > 0) {
-        edges.push({ id: `e_def_u_${r.order}`, source: `user_${users[0].uid}`, target: rNodeId });
-      }
-
-      if (r.connector) {
-        const cNodeId = `conn_smpp_${r.connector}`;
-        edges.push({ id: `e_r_${r.order}_c_${r.connector}`, source: rNodeId, target: cNodeId });
-      }
-    }
-
-    // Stage 6: Connectors
-    for (const c of smppConns) {
-      const cNodeId = `conn_smpp_${c.cid}`;
-      nodes.push({
-        id: cNodeId,
-        type: 'connector',
-        stage: 6,
-        label: `smppc(${c.cid})`,
-        data: c
-      });
-    }
-    for (const c of httpConns) {
-      const cNodeId = `conn_http_${c.cid}`;
-      nodes.push({
-        id: cNodeId,
-        type: 'connector',
-        stage: 6,
-        label: `httpc(${c.cid})`,
-        data: c
-      });
-    }
-
-    res.json({
-      timestamp: new Date().toISOString(),
-      nodes,
-      edges
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 13. Deploy Full Topology DAG to Jasmin & Persist (Atomic Transaction)
-app.post('/api/topology/deploy', async (req, res) => {
-  const { nodes, edges } = req.body;
-  if (!Array.isArray(nodes) || !Array.isArray(edges)) {
-    return res.status(400).json({ error: 'nodes and edges arrays are required' });
-  }
-
-  const logs: string[] = [];
-  try {
-    // 1. Process Filters
-    const filterNodes = nodes.filter((n: any) => n.type === 'filter');
-    for (const f of filterNodes) {
-      if (f.data && f.data.fid && f.data.type) {
-        let paramKey = 'destination_addr';
-        let paramValue = f.data.pattern || '^.*';
-
-        if (f.data.type === 'SourceAddrFilter') {
-          paramKey = 'source_addr';
-        } else if (f.data.type === 'ShortMessageFilter') {
-          paramKey = 'short_message';
-        } else if (f.data.type === 'UserFilter') {
-          paramKey = 'uid';
-          paramValue = f.data.uid || f.data.pattern;
-        } else if (f.data.type === 'GroupFilter') {
-          paramKey = 'gid';
-          paramValue = f.data.gid || f.data.pattern;
-        } else if (f.data.type === 'TagFilter') {
-          paramKey = 'tag';
-          paramValue = f.data.tag || f.data.pattern;
-        }
-
-        try {
-          await jcli.deleteFilter(f.data.fid);
-        } catch (_) {}
-        await jcli.createFilter(f.data.fid, f.data.type, paramKey, paramValue);
-        logs.push(`Filter ${f.data.fid} updated`);
-      }
-    }
-
-    // 2. Process Routes
-    const routeNodes = nodes.filter((n: any) => n.type === 'route');
-    for (const r of routeNodes) {
-      const order = r.data && r.data.order !== undefined ? parseInt(r.data.order, 10) : 0;
-      const type = r.data && r.data.type ? r.data.type : 'StaticMTRoute';
-      const rate = r.data && r.data.rate ? parseFloat(String(r.data.rate).replace(/[^0-9.]/g, '')) : 0;
-
-      // Extract incoming filters from edges
-      const incomingFilterIds = edges
-        .filter((e: any) => e.to === r.id || e.target === r.id)
-        .map((e: any) => {
-          const srcId = e.from || e.source;
-          const srcNode = nodes.find((n: any) => n.id === srcId);
-          return srcNode && srcNode.data ? srcNode.data.fid : null;
-        })
-        .filter(Boolean);
-
-      // Extract outgoing connectors from edges
-      const outgoingConnectors = edges
-        .filter((e: any) => e.from === r.id || e.source === r.id)
-        .map((e: any) => {
-          const tgtId = e.to || e.target;
-          const tgtNode = nodes.find((n: any) => n.id === tgtId);
-          return tgtNode && tgtNode.data ? tgtNode.data.cid : null;
-        })
-        .filter(Boolean);
-
-      if (outgoingConnectors.length > 0) {
-        try {
-          await jcli.deleteMtRoute(order);
-        } catch (_) {}
-        await jcli.createMtRoute(
-          type,
-          rate,
-          type === 'FailoverMTRoute' || type === 'RandomRoundrobinMTRoute' ? outgoingConnectors : outgoingConnectors[0],
-          order,
-          incomingFilterIds
-        );
-        logs.push(`Route #${order} (${type}) bound to ${outgoingConnectors.join(';')} with filters [${incomingFilterIds.join(',')}]`);
-      }
-    }
-
-    // 3. Persist to Disk
-    const persistLog = await jcli.persist();
-    logs.push(`Persist complete: ${persistLog}`);
-
-    res.json({
-      success: true,
-      persisted: true,
-      logs
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message, logs });
-  }
-});
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Jasmin Enterprise GUI] Web Server running at http://localhost:${PORT}`);
-});
+// --- Start -----------------------------------------------------------------------------------
+amqpTap.start();
+gateway.ping().then((ok) =>
+  console.log(ok ? `[jcli] Connected to Jasmin ${gateway.version ?? ''} at ${JCLI_HOST}:${JCLI_PORT}` : `[jcli] ${JCLI_HOST}:${JCLI_PORT} unreachable (${gateway.lastError}); retrying on demand`)
+);
+
+server.listen(PORT, '0.0.0.0', () => console.log(`[console] Listening on http://0.0.0.0:${PORT}`));
+
+const shutdown = () => {
+  amqpTap.stop();
+  gateway.close();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
