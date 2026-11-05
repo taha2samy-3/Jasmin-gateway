@@ -25,7 +25,14 @@ export default async function admin(root, ctx) {
       </div>
       <section class="card" data-panel="audit" hidden>
         <div class="card-head"><div><h2>Audit log</h2><p>Sign-ins, account changes, gateway changes and jCLI console commands (newest first).</p></div>
-          <div class="toolbar"><div class="search" style="max-width:260px">${icon('search')}<input class="input" data-aq placeholder="Filter" aria-label="Filter audit log"></div><button class="btn" data-reload>${icon('refresh')}</button></div></div>
+          <div class="toolbar">
+            <div class="search" style="max-width:220px">${icon('search')}<input class="input" data-aq placeholder="Search" aria-label="Search the audit log"></div>
+            <select class="select" data-arange aria-label="Period" style="width:auto"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="">Everything retained</option></select>
+            <button class="btn" data-reload title="Reload">${icon('refresh')}</button>
+            <button class="btn" data-export="csv" title="Download the full retained trail for the selected period">${icon('download')} CSV</button>
+            <button class="btn" data-export="jsonl">${icon('download')} JSON lines</button>
+          </div></div>
+        <div class="audit-lifecycle sub" data-lifecycle></div>
         <div class="table-wrap" style="max-height:calc(100vh - 300px)"><table class="table"><thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr></thead><tbody data-audit></tbody></table></div>
       </section>
       <section class="card" data-panel="roles" hidden>
@@ -97,9 +104,25 @@ export default async function admin(root, ctx) {
       toastError(err);
     }
   }
+  const sinceParam = () => {
+    const days = $('[data-arange]').value;
+    return days ? new Date(Date.now() - Number(days) * 86400_000).toISOString() : undefined;
+  };
+  const fmtBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+  function drawLifecycle(l) {
+    if (!l) return;
+    const keep = l.retentionDays > 0 ? `kept for ${l.retentionDays} days` : 'kept without time limit';
+    render(
+      $('[data-lifecycle]'),
+      html`${icon('info')} <span>Retention: ${keep}, rotated daily and at ${fmtBytes(l.maxFileBytes)}, capped at ${fmtBytes(l.maxTotalBytes)} in total${l.stdout ? ', also streamed to the container log' : ''}.</span>
+        <span>Stored now: ${l.files} file(s), ${fmtBytes(l.totalBytes)}${l.oldestDay ? `, oldest ${l.oldestDay}` : ''}.</span>`
+    );
+  }
   async function loadAudit() {
     try {
-      audit = (await api('/api/admin/audit', { query: { limit: 1000 } })).entries;
+      const r = await api('/api/admin/audit', { query: { limit: 2000, since: sinceParam() } });
+      audit = r.entries;
+      drawLifecycle(r.lifecycle);
       drawAudit();
     } catch (err) {
       toastError(err);
@@ -123,7 +146,17 @@ export default async function admin(root, ctx) {
     if (b.dataset.tab === 'audit') loadAudit();
   };
   $('[data-aq]').addEventListener('input', drawAudit);
+  $('[data-arange]').onchange = loadAudit;
   $('[data-reload]').onclick = loadAudit;
+  root.querySelectorAll('[data-export]').forEach((b) => {
+    b.onclick = () => {
+      // A plain navigation keeps large exports streaming instead of buffering them in the page.
+      const q = new URLSearchParams({ format: b.dataset.export });
+      const since = sinceParam();
+      if (since) q.set('since', since);
+      window.location.href = `/api/admin/audit/export?${q}`;
+    };
+  });
 
   $('[data-add]').onclick = () =>
     formDialog({

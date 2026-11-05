@@ -11,8 +11,11 @@ metadata:
   {{- end }}
 spec:
   parentRefs:
+    {{- /* group/kind written out: the API server defaults them, so server-side diffs (Argo CD) stay clean. */}}
     {{- range .Values.httpRoute.parentRefs }}
-    - name: {{ .name }}
+    - group: {{ .group | default "gateway.networking.k8s.io" }}
+      kind: {{ .kind | default "Gateway" }}
+      name: {{ .name }}
       {{- if .namespace }}
       namespace: {{ .namespace }}
       {{- end }}
@@ -49,8 +52,11 @@ spec:
             value: {{ $endpoint.path }}
         {{- end }}
       backendRefs:
-        - name: {{ include "jasmin.fullname" $ }}
+        - group: ""
+          kind: Service
+          name: {{ include "jasmin.fullname" $ }}
           port: {{ default $.Values.service.ports.httpApi.port $endpoint.port }}
+          weight: 1
     {{- end }}
     {{- end }}
     {{- else }}
@@ -59,7 +65,10 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: {{ include "jasmin.fullname" . }}
+        - group: ""
+          kind: Service
+          name: {{ include "jasmin.fullname" . }}
           port: {{ .Values.service.ports.httpApi.port }}
+          weight: 1
     {{- end }}
 {{- end }}

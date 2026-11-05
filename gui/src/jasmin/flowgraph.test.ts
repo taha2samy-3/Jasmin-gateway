@@ -14,8 +14,8 @@ function sample() {
       n('f2', 'filter', { fid: 'all', type: 'TransparentFilter', value: '' }),
       n('r1', 'route', { type: 'FailoverMTRoute', order: 20, rate: 0 }),
       n('r0', 'route', { type: 'DefaultRoute', order: 0, rate: 0 }),
-      n('c1', 'connector', { kind: 'smpp', cid: 'a' }),
-      n('c2', 'connector', { kind: 'smpp', cid: 'b' }),
+      n('c1', 'connector', { kind: 'smpp', cid: 'carrier_a' }),
+      n('c2', 'connector', { kind: 'smpp', cid: 'carrier_b' }),
       n('h1', 'connector', { kind: 'http', cid: 'crm' })
     ],
     connections: [
@@ -52,7 +52,7 @@ describe('validateConnection', () => {
 
 describe('route helpers', () => {
   test('connector order follows wire order (failover priority)', () => {
-    assert.deepEqual(routeConnectors(sample(), 'r1'), ['b', 'a']);
+    assert.deepEqual(routeConnectors(sample(), 'r1'), ['carrier_b', 'carrier_a']);
     assert.deepEqual(routeFilters(sample(), 'r1'), ['eg']);
   });
 });

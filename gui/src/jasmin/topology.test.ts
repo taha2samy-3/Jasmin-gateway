@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { buildTopology, filterDescription, planDeploy, simulateMtRouting, FlowGraph } from './topology.js';
+import { buildTopology, filterDescription, planDeploy, planFingerprint, simulateMtRouting, FlowGraph } from './topology.js';
 import type { GatewaySnapshot } from './gateway.js';
 
 const filter = (fid: string, type: string, value: string) => {
@@ -138,5 +138,93 @@ describe('simulateMtRouting (Jasmin semantics)', () => {
     const s = snapshot();
     s.mtRoutes = s.mtRoutes.filter((r) => r.order !== 0);
     assert.equal(simulateMtRouting(s, { destination_addr: '44700000000' }).matched, false);
+  });
+});
+
+describe('planDeploy validation and safety (Jasmin 0.11.1 rules)', () => {
+  const routeNode = (g: FlowGraph, order: number) => g.nodes.find((n) => n.type === 'route' && n.data.order === order)!;
+
+  test('rejects what jCLI would reject, before anything runs', () => {
+    const s = snapshot();
+    const g = graphOf(s);
+    g.nodes.push({ id: 'filter_new', type: 'filter', x: 0, y: 0, data: { fid: 'a_very_long_filter_id', type: 'DestinationAddrFilter', value: '^1' } });
+    g.nodes.push({ id: 'route_new', type: 'route', x: 0, y: 0, data: { order: 40, type: 'StaticMTRoute', rate: -1 } });
+    g.connections.push({ from: 'filter_new', to: 'route_new' }, { from: 'route_new', to: 'smppc_carrier_a' });
+    g.nodes.push({ id: 'route_rr', type: 'route', x: 0, y: 0, data: { order: 50, type: 'RandomRoundrobinMTRoute', rate: 0 } });
+    g.connections.push({ from: 'filter_all', to: 'route_rr' }, { from: 'route_rr', to: 'smppc_carrier_a' });
+    g.nodes.push({ id: 'route_blank', type: 'route', x: 0, y: 0, data: { order: '', type: 'StaticMTRoute', rate: 0 } });
+    g.connections.push({ from: 'filter_all', to: 'route_blank' }, { from: 'route_blank', to: 'smppc_carrier_a' });
+    const plan = planDeploy(g, s, { prune: false });
+    const text = plan.errors.join('\n');
+    assert.match(text, /a_very_long_filter_id.*1-16/);
+    assert.match(text, /#40: rate must be a number ≥ 0/);
+    assert.match(text, /#50: a RandomRoundrobinMTRoute needs at least two connectors/);
+    assert.match(text, /"route_blank": order must be an integer ≥ 1/);
+  });
+
+  test('ConnectorFilter cannot be used on an MT route; bad interval borders are caught', () => {
+    const s = snapshot();
+    const g = graphOf(s);
+    g.nodes.push({ id: 'filter_c', type: 'filter', x: 0, y: 0, data: { fid: 'from_smpp', type: 'ConnectorFilter', value: 'carrier_a' } });
+    g.nodes.push({ id: 'filter_ti', type: 'filter', x: 0, y: 0, data: { fid: 'office', type: 'TimeIntervalFilter', value: '18:00:00;08:00:00' } });
+    g.connections.push({ from: 'filter_c', to: routeNode(g, 30).id }, { from: 'filter_ti', to: routeNode(g, 30).id });
+    const text = planDeploy(g, s).errors.join('\n');
+    assert.match(text, /ConnectorFilter only works on MO routes/);
+    assert.match(text, /right border must be after the left border/);
+  });
+
+  test('a broken live route that is not touched does not block other deploys', () => {
+    const s = snapshot();
+    // Route #25 still holds a copy of a deleted filter and points at a deleted connector.
+    s.mtRoutes.unshift(route(25, 'StaticMTRoute', 0, ['gone_carrier'], ['<DA (dst_addr=^999)>']));
+    const g = graphOf(s);
+    routeNode(g, 30).data.rate = 0.05;
+    const plan = planDeploy(g, s);
+    assert.deepEqual(plan.errors, []);
+    assert.deepEqual(plan.steps.map((st) => `${st.action} ${st.kind} ${st.id}`), ['replace route 30']);
+    // Changing the broken route itself is refused with the reason.
+    routeNode(g, 25).data.rate = 1;
+    assert.match(planDeploy(g, s).errors.join('\n'), /#25: unnamed filter <DA \(dst_addr=\^999\)>.*smppc\(gone_carrier\) no longer exists/);
+  });
+
+  test('unchanged graph is idempotent even with rates beyond 5 decimals in the editor', () => {
+    const s = snapshot();
+    const g = graphOf(s);
+    routeNode(g, 30).data.rate = 0.0200000001;
+    const plan = planDeploy(g, s);
+    assert.equal(plan.steps.length, 0);
+  });
+
+  test('pruning the DefaultRoute is called out; fingerprint changes when the gateway changes', () => {
+    const s = snapshot();
+    const g = graphOf(s);
+    g.nodes = g.nodes.filter((n) => !(n.type === 'route' && n.data.type === 'DefaultRoute'));
+    const plan = planDeploy(g, s, { prune: true });
+    assert.ok(plan.warnings.some((w) => /DefaultRoute \(#0\) will be removed/.test(w)));
+    const reviewed = planFingerprint(plan);
+    assert.equal(planFingerprint(planDeploy(g, s, { prune: true })), reviewed);
+    // Someone adds route #50 after the review: the recomputed plan now also removes it.
+    s.mtRoutes.unshift(route(50, 'StaticMTRoute', 0, ['carrier_b'], ['<T>']));
+    assert.notEqual(planFingerprint(planDeploy(g, s, { prune: true })), reviewed);
+  });
+});
+
+describe('simulateMtRouting matches Jasmin semantics', () => {
+  test('tags compare as strings; regex commas are preserved for unnamed filters', () => {
+    const s = snapshot();
+    s.filters.push(filter('tag5', 'TagFilter', '5'));
+    s.mtRoutes.unshift(route(60, 'StaticMTRoute', 0, ['carrier_b'], ['<TG (tag=5)>']));
+    s.mtRoutes.unshift(route(70, 'StaticMTRoute', 0, ['carrier_b'], ['<DA (dst_addr=^1{2,3}5)>']));
+    assert.equal(simulateMtRouting(s, { destination_addr: '1115' }).route?.order, 70);
+    assert.equal(simulateMtRouting(s, { destination_addr: '999', tags: ['05'] }).route?.order, 0);
+    assert.equal(simulateMtRouting(s, { destination_addr: '999', tags: ['5'] }).route?.order, 60);
+  });
+
+  test('date interval uses the local date like the time interval', () => {
+    const s = snapshot();
+    s.filters.push(filter('nov5', 'DateIntervalFilter', '2026-11-05;2026-11-06'));
+    s.mtRoutes.unshift(route(80, 'StaticMTRoute', 0, ['carrier_b'], [filterDescription('DateIntervalFilter', '2026-11-05;2026-11-06')]));
+    const localEarly = new Date(2026, 10, 5, 1, 30, 0); // 01:30 local on Nov 5
+    assert.equal(simulateMtRouting(s, { destination_addr: '999', at: localEarly }).route?.order, 80);
   });
 });

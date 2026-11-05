@@ -39,8 +39,11 @@ While an official Dockerfile exists in upstream `jookies/jasmin`, it crashes whe
    - Jasmin imports `from pkg_resources import iter_entry_points`. In `setuptools>=82`, `pkg_resources` was removed. We pin `setuptools<82` to resolve this.
 2. **Missing AMQP Specification XML Files:**
    - Jasmin's `txamqp` library expects specification files (`amqp0-9-1.xml` and `amqp0-8.stripped.rabbitmq.xml`) at `/etc/jasmin/resource/`. Without them, AMQP initialization crashes. These are now bundled in the image.
-3. **jCLI Authentication & MD5 Password Encoding:**
-   - Jasmin's `ConfigFile._get()` automatically reads `JCLI_ADMIN_PASSWORD` from `os.environ` and `JCliConfig` expects it to be an MD5 hex string. If passed as plaintext, `binascii.unhexlify()` throws `binascii.Error: Non-hexadecimal digit found`. Our `docker-entrypoint.sh` and `configure.py` automatically detect and convert plaintext passwords to MD5 hex on startup.
+3. **jCLI admin password: plain text in, PBKDF2 inside (no MD5):**
+   - `JCLI_ADMIN_PASSWORD` is always the plain-text password. Nothing guesses whether it is "already a hash" (a random 32-character hex password such as `openssl rand -hex 16` used to be mistaken for an MD5 digest, and login failed).
+   - Upstream Jasmin stores this password as an unsalted MD5 and compares `md5(password)`. The image patches jCLI (`docker/patches/`) to verify a salted **PBKDF2-SHA256** hash instead; the entrypoint hashes the plain password at start-up. The patch fails the build if the upstream code does not match exactly.
+   - Passwords jasmind could never accept stop the container with a clear message: non-ASCII characters (`jasmind -p` encodes ASCII), leading/trailing spaces (jCLI strips them), control characters.
+   - Still MD5, by Jasmin's design: the passwords of Jasmin *users* (SMPP/HTTP clients) inside the store, and the internal PB services (Twisted PB, `127.0.0.1` only). Changing those would break existing stores.
 4. **Interface Binding:**
    - Automatically defaults `jcli`, `smpp-server`, and `http-api` to bind to `0.0.0.0` instead of `127.0.0.1` so that Kubernetes services can route traffic to them.
 5. **Memory Optimization:**
@@ -51,6 +54,10 @@ While an official Dockerfile exists in upstream `jookies/jasmin`, it crashes whe
    - `configure.py` used to rewrite `/etc/jasmin/jasmin.cfg` in place, which crashes on a read-only ConfigMap mount. When the file is read-only, the entrypoint now writes the merged configuration to `/tmp/jasmin-runtime/jasmin.cfg` and starts `jasmind -c <copy>`.
 8. **`publish_submit_sm_resp`:**
    - Configurable through `SM_LISTENER_PUBLISH_SUBMIT_SM_RESP` (and `config.smListener.publishSubmitSmResp` in Helm, default `true`) so carrier responses are published for the console's live traffic view.
+9. **Environment files (Vault Agent) without overriding the command:**
+   - `JASMIN_ENV_FILES=/vault/secrets/config[:...]` (Helm: `envFiles`) is sourced by both images before start-up. `REDIS_*` and `RABBITMQ_*` names are mapped onto Jasmin's variables, but only when the files set them, so the `REDIS_PORT=tcp://...` variables Kubernetes injects are ignored. A missing file stops the container. Overriding the command instead easily drops `--enable-dlr-lookup --enable-dlr-thrower --enable-interceptor-client`, which silently disables delivery receipts and interceptors.
+10. **Logs to stdout:**
+   - `JASMIN_LOG_TO_STDOUT=true` (Helm: `config.logToStdout`) sets every component's `<SECTION>_LOG_FILE=/dev/stdout`; Jasmin switches to a stream handler for any log file containing `stdout`. No log volume to clean up; Fluent Bit / Promtail collect it.
 
 ---
 
@@ -403,7 +410,23 @@ dashboard:
 * The image passes the configured jCLI credentials to `jasmind` (instead of the defaults in the image `CMD`), so it reloads the persisted configuration itself on start-up.
 * Prometheus alerts use the metrics Jasmin 0.11.1 actually exports (`smppc_*{cid}`, `httpapi_*`, `smppsapi_*`); they were verified in Prometheus against a running gateway (a down connector fires, a bound one does not).
 * Redis and RabbitMQ are not bundled: `redis.enabled` / `rabbitmq.enabled` must stay `false`; set `externalRedis` / `externalRabbitMQ`.
-* Console accounts and the audit log are stored in `console/` on the `store` volume, so they survive pod restarts together with Jasmin's configuration.
+* Console accounts, sessions and the audit log are stored in `console/` on the `store` volume, so they survive pod restarts together with Jasmin's configuration. Sessions are stored with hashed ids; a restart does not sign anyone out (`dashboard.session.persist`).
+* **Audit lifecycle** (`dashboard.audit`): the trail is rotated daily and at `maxFileMB`, files older than `retentionDays` (default 180) are deleted, and the oldest go first above `maxTotalMB`. Admins can filter it and download it as CSV or JSON lines; `stdout: true` also streams it to the container log for a SIEM.
+* **Flow deploys are checked against the review:** the plan the user approved has a fingerprint; if the gateway changed in between (another admin, the jCLI terminal, a stale tab) the deploy is refused and the updated plan is shown. jCLI's own rules (filter IDs ≤16 characters, connector IDs 3-25, MO-only filters, connector counts per route type, interval formats) are checked before anything runs.
+* **Vault / External Secrets:** `envFiles: ["/vault/secrets/config"]`, `credentials.createSecret: false`, `credentials.useSecretRef: false`. No command override is needed. `extraObjects` deploys extra manifests (e.g. a NetBird `SetupKey`) without forking the chart; `extraInitContainers`, `extraContainers`, `command`/`args` are available for the rest.
+* `enableServiceLinks: false` by default: Jasmin reads any `<SECTION>_<OPTION>` environment variable as configuration, and Service link variables could collide with it.
+
+### Managing the volumes (PVCs)
+| Claim | Mounted at | Holds | Size value |
+|---|---|---|---|
+| `store-<release>-jasmin-0` | `/etc/jasmin/store` (Jasmin), `/data` (console) | `persist`ed users, groups, connectors, filters, routes; console accounts, sessions, audit trail | `persistence.size` |
+| `logs-<release>-jasmin-0` | `/var/log/jasmin` | Jasmin log files (per pod hostname) | `persistence.logsSize` |
+
+* **Logs:** prefer `config.logToStdout: true` with `persistence.logsEnabled: false`; logs then go to the container log and `/var/log/jasmin` becomes an `emptyDir` limited to `logsSize`. No log-cleaner sidecar is needed.
+* **Growing a volume:** StatefulSet PVC templates cannot change after install. When Helm can read the cluster, the chart stops an upgrade that would change them and prints the procedure: patch the PVC itself (`allowVolumeExpansion: true` on the StorageClass), then `kubectl delete statefulset <name> --cascade=orphan` (the pod and PVCs keep running) and upgrade/sync again. Argo CD renders without cluster access, so do the same steps there before syncing a size change.
+* **Retention:** `persistence.retentionPolicy: {whenDeleted: Retain, whenScaled: Retain}` keeps PVCs when the release is uninstalled or scaled down (Kubernetes ≥1.27). Deleting the namespace still deletes them.
+* **Restore / migrate:** `persistence.existingClaim` mounts an existing PVC (e.g. restored from a VolumeSnapshot) as the store. The console's *Export* (JSON snapshot of the gateway configuration) is a light backup that does not depend on the volume.
+* One store per pod: replicas do not share configuration. Keep `replicaCount: 1` unless you replicate changes yourself.
 
 ### Configuration (environment)
 | Variable | Default | Purpose |
@@ -416,6 +439,10 @@ dashboard:
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / generated | initial administrator |
 | `PUBLIC_URL`, `TRUST_PROXY` | | external URL (OIDC redirect), reverse proxy |
 | `SESSION_IDLE_MINUTES` / `SESSION_MAX_HOURS` | `60` / `12` | session lifetime |
+| `SESSION_PERSIST` | `true` | keep sessions across restarts (`DATA_DIR/sessions.json`, hashed ids) |
+| `AUDIT_RETENTION_DAYS` / `AUDIT_MAX_FILE_MB` / `AUDIT_MAX_TOTAL_MB` / `AUDIT_STDOUT` | `180` / `20` / `500` / `false` | audit trail lifecycle |
+| `JASMIN_ENV_FILES` | | shell env files sourced at start (e.g. Vault Agent); `RABBITMQ_PASSWORD`, `DASHBOARD_ADMIN_USERNAME/PASSWORD` are mapped |
+| `JASMIN_LOG_TO_STDOUT` | `false` | new SMPP connectors log to stdout (`logfile /dev/stdout`) |
 | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_DISPLAY_NAME`, `OIDC_SCOPES`, `OIDC_ROLE_CLAIM`, `OIDC_ROLE_MAP` | | single sign-on |
 
 ### Running locally
@@ -423,7 +450,7 @@ dashboard:
 cd gui
 npm ci
 ADMIN_PASSWORD='choose-a-strong-one' JCLI_PORT=8990 npm run dev   # http://localhost:3000
-npm test        # 57 tests, including replays of real Jasmin 0.11.1 jCLI output and AMQP pickles
+npm test        # 77 tests, including replays of real Jasmin 0.11.1 jCLI output and AMQP pickles
 ```
 
 ### Notes on Jasmin behaviour the console relies on

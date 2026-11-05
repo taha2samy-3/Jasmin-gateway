@@ -1,6 +1,6 @@
 {
   "name": "jasmin-enterprise-gui",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "type": "module",
   "description": "Enterprise Web Management Dashboard for Jasmin SMS Gateway",
   "main": "dist/server.js",

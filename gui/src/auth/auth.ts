@@ -1,4 +1,6 @@
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { IncomingMessage } from 'http';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import { BaseClient, generators, Issuer } from 'openid-client';
@@ -11,6 +13,8 @@ export interface AuthOptions {
   bootstrapAdmin: { username: string; password?: string };
   sessionIdleMinutes: number;
   sessionMaxHours: number;
+  /** Keep sessions in DATA_DIR/sessions.json so a console restart does not sign everyone out (default true). */
+  persistSessions?: boolean;
   oidc?: {
     issuerUrl: string;
     clientId: string;
@@ -53,12 +57,26 @@ function parseCookies(header: string | undefined): Record<string, string> {
   return out;
 }
 
+/**
+ * True when an Origin header is absent or names the same host as the request.
+ * Never throws: browsers send `Origin: null` (sandboxed frames, some redirects) and attackers can
+ * send anything, so an unparsable value is treated as cross-origin instead of raising.
+ */
+export function sameOrigin(origin: string | undefined, host: string | undefined): boolean {
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
 export function clientIp(req: Request | IncomingMessage): string {
   return ((req as Request).ip || req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 }
 
 /** Simple fixed-window limiter for login attempts. */
-class Limiter {
+export class Limiter {
   private hits = new Map<string, { count: number; reset: number }>();
   constructor(private max: number, private windowMs: number) {}
   hit(key: string): boolean {
@@ -74,19 +92,77 @@ class Limiter {
   clear(key: string) {
     this.hits.delete(key);
   }
+  /** Drop expired windows so random usernames cannot grow the map without bound. */
+  sweep(now = Date.now()) {
+    for (const [k, e] of this.hits) if (e.reset < now) this.hits.delete(k);
+  }
+  get size() {
+    return this.hits.size;
+  }
 }
+
+/** Session ids are stored hashed: a leaked sessions.json cannot be replayed as cookies. */
+const sessionKey = (sid: string) => crypto.createHash('sha256').update(sid).digest('base64url');
 
 export class Auth {
   private sessions = new Map<string, Session>();
   private oidcClient: BaseClient | null = null;
   private oidcIssuer: Issuer<BaseClient> | null = null;
   private oidcError: string | null = null;
+  /** Per account+IP: stops guessing one account. */
   private limiter = new Limiter(10, 15 * 60 * 1000);
+  /** Per IP: stops spraying many usernames from one address. */
+  private ipLimiter = new Limiter(50, 15 * 60 * 1000);
+  private readonly sessionsFile: string | null;
+  private sessionsDirty = false;
+  private timer: NodeJS.Timeout;
   readonly store: UserStore;
 
   constructor(private readonly opts: AuthOptions) {
     this.store = opts.store;
-    setInterval(() => this.sweep(), 60_000).unref();
+    this.sessionsFile = opts.persistSessions === false ? null : path.join(opts.store.dir, 'sessions.json');
+    this.loadSessions();
+    this.timer = setInterval(() => {
+      this.sweep();
+      this.saveSessions();
+    }, 30_000);
+    this.timer.unref();
+  }
+
+  /** Flush sessions and stop timers (call on shutdown). */
+  close() {
+    clearInterval(this.timer);
+    this.saveSessions(true);
+    this.store.auditLog.close();
+  }
+
+  private loadSessions() {
+    if (!this.sessionsFile || !fs.existsSync(this.sessionsFile)) return;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.sessionsFile, 'utf8'));
+      const now = Date.now();
+      for (const s of Array.isArray(parsed.sessions) ? parsed.sessions : []) {
+        if (typeof s?.id === 'string' && typeof s.userId === 'string' && this.valid(s, now)) {
+          this.sessions.set(s.id, { id: s.id, userId: s.userId, createdAt: s.createdAt, lastSeen: s.lastSeen });
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[auth] Ignoring unreadable ${this.sessionsFile}: ${err.message}`);
+    }
+  }
+
+  /** Atomic write; the OIDC id_token is not persisted (only used as a logout hint). */
+  private saveSessions(force = false) {
+    if (!this.sessionsFile || (!this.sessionsDirty && !force)) return;
+    const sessions = [...this.sessions.values()].map(({ id, userId, createdAt, lastSeen }) => ({ id, userId, createdAt, lastSeen }));
+    const tmp = `${this.sessionsFile}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, sessions }), { mode: 0o600 });
+      fs.renameSync(tmp, this.sessionsFile);
+      this.sessionsDirty = false;
+    } catch (err: any) {
+      console.warn(`[auth] Could not save sessions: ${err.message}`);
+    }
   }
 
   get oidcEnabled() {
@@ -154,16 +230,25 @@ export class Auth {
   }
 
   private startSession(req: Request, res: Response, user: ConsoleUser, idToken?: string) {
-    const id = crypto.randomBytes(32).toString('base64url');
+    const sid = crypto.randomBytes(32).toString('base64url');
+    const id = sessionKey(sid);
     const now = Date.now();
     this.sessions.set(id, { id, userId: user.id, createdAt: now, lastSeen: now, idToken });
-    this.setCookie(req, res, COOKIE, id, this.opts.sessionMaxHours * 3600_000);
+    this.saveSessions(true);
+    this.setCookie(req, res, COOKIE, sid, this.opts.sessionMaxHours * 3600_000);
     this.store.update(user.id, { lastLoginAt: new Date().toISOString() });
   }
 
   private sweep() {
     const now = Date.now();
-    for (const [id, s] of this.sessions) if (!this.valid(s, now)) this.sessions.delete(id);
+    for (const [id, s] of this.sessions) {
+      if (!this.valid(s, now)) {
+        this.sessions.delete(id);
+        this.sessionsDirty = true;
+      }
+    }
+    this.limiter.sweep(now);
+    this.ipLimiter.sweep(now);
   }
 
   private valid(s: Session, now = Date.now()) {
@@ -173,17 +258,25 @@ export class Auth {
   /** Resolve the session from a cookie header (also used for WebSocket upgrades). */
   resolve(cookieHeader: string | undefined): { session: Session; user: ConsoleUser } | null {
     const sid = parseCookies(cookieHeader)[COOKIE];
-    const session = sid ? this.sessions.get(sid) : undefined;
+    const session = sid ? this.sessions.get(sessionKey(sid)) : undefined;
     if (!session || !this.valid(session)) return null;
     const user = this.store.get(session.userId);
     if (!user || user.status === 'disabled') return null;
     session.lastSeen = Date.now();
+    this.sessionsDirty = true;
     return { session, user };
   }
 
   /** Revoke every session of an account (after disable, role change or password change). */
   revokeUser(userId: string, except?: string) {
-    for (const [id, s] of this.sessions) if (s.userId === userId && id !== except) this.sessions.delete(id);
+    let changed = false;
+    for (const [id, s] of this.sessions) {
+      if (s.userId === userId && id !== except) {
+        this.sessions.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) this.saveSessions(true);
   }
 
   /** Attach req.user when a valid session cookie is present. */
@@ -200,8 +293,7 @@ export class Auth {
   csrf = (req: Request, res: Response, next: NextFunction) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
     if (req.get('X-Requested-With') !== 'jasmin-console') return res.status(403).json({ error: 'Missing anti-CSRF header' });
-    const origin = req.get('Origin');
-    if (origin && new URL(origin).host !== req.get('Host')) return res.status(403).json({ error: 'Cross-origin request rejected' });
+    if (!sameOrigin(req.get('Origin'), req.get('Host'))) return res.status(403).json({ error: 'Cross-origin request rejected' });
     next();
   };
 
@@ -231,8 +323,12 @@ export class Auth {
     app.post('/auth/login', json, this.csrf, (req, res) => {
       const username = String(req.body?.username ?? '').trim();
       const password = String(req.body?.password ?? '');
-      const key = `${clientIp(req)}|${username.toLowerCase()}`;
-      if (!this.limiter.hit(key)) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
+      const ip = clientIp(req);
+      const key = `${ip}|${username.toLowerCase()}`;
+      if (!this.ipLimiter.hit(ip) || !this.limiter.hit(key)) {
+        this.store.audit({ actor: username || 'anonymous', action: 'login-throttled', ip });
+        return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
+      }
       const user = this.store.findLocal(username);
       // Verify even for unknown users to keep timing uniform.
       const ok = verifyPassword(password, user?.passwordHash ?? hashPassword('timing-dummy-password'));
@@ -252,6 +348,7 @@ export class Auth {
       let logoutUrl: string | null = null;
       if (r) {
         this.sessions.delete(r.session.id);
+        this.saveSessions(true);
         this.store.audit({ actor: r.user.username, action: 'logout', ip: clientIp(req) });
         if (r.session.idToken && this.oidcClient && this.oidcIssuer?.metadata.end_session_endpoint) {
           logoutUrl = this.oidcClient.endSessionUrl({ id_token_hint: r.session.idToken, post_logout_redirect_uri: `${(this.opts.publicUrl || '').replace(/\/$/, '')}/login` });
@@ -441,8 +538,44 @@ export class Auth {
       res.json({ success: true });
     });
 
+    const auditFilter = (req: Request) => {
+      const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+      const since = str(req.query.since);
+      return { since: since && !isNaN(Date.parse(since)) ? new Date(since).toISOString() : undefined, actor: str(req.query.actor), action: str(req.query.action), q: str(req.query.q) };
+    };
+
     app.get('/api/admin/audit', admin, (req, res) => {
-      res.json({ entries: this.store.readAudit(Math.min(Number(req.query.limit) || 200, 2000)) });
+      res.json({ entries: this.store.readAudit(Math.min(Number(req.query.limit) || 200, 5000), auditFilter(req)), lifecycle: this.store.auditLog.stats() });
+    });
+
+    // Full retained trail, oldest first: JSON lines or CSV.
+    app.get('/api/admin/audit/export', admin, (req, res) => {
+      const { since } = auditFilter(req);
+      const csv = req.query.format === 'csv';
+      this.audit(req, 'audit-exported', csv ? 'csv' : 'jsonl', { since });
+      const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, '');
+      res.setHeader('Content-Type', csv ? 'text/csv; charset=utf-8' : 'application/x-ndjson; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="jasmin-console-audit-${stamp}.${csv ? 'csv' : 'jsonl'}"`);
+      // Leading =,+,-,@ would run as formulas when the CSV is opened in a spreadsheet.
+      const cell = (v: unknown) => {
+        let t = v === undefined || v === null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
+        if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`;
+        return `"${t.replace(/"/g, '""')}"`;
+      };
+      if (csv) res.write('at,actor,action,target,detail,ip\n');
+      for (const line of this.store.auditLog.exportLines(since)) {
+        if (!csv) {
+          res.write(line + '\n');
+          continue;
+        }
+        try {
+          const e = JSON.parse(line);
+          res.write([e.at, e.actor, e.action, e.target, e.detail, e.ip].map(cell).join(',') + '\n');
+        } catch {
+          /* skip a damaged line */
+        }
+      }
+      res.end();
     });
   }
 

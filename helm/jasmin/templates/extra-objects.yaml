@@ -1,0 +1,13 @@
+{{- /*
+Extra manifests deployed with the release (e.g. a NetBird SetupKey, an ExternalSecret, a
+VolumeSnapshot schedule). Each item is a map or a string; both go through `tpl`, so they can use
+{{ include "jasmin.fullname" . }} and the chart labels.
+*/ -}}
+{{- range .Values.extraObjects }}
+---
+{{- if typeIs "string" . }}
+{{ tpl . $ }}
+{{- else }}
+{{ tpl (toYaml .) $ }}
+{{- end }}
+{{- end }}

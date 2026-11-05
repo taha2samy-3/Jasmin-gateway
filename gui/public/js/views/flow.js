@@ -106,7 +106,7 @@ export default async function flow(root, ctx) {
   }
   function changed() {
     issues = lintGraph(graph);
-    writeJson(sessionStorage, DRAFT_KEY, { graph, baselineAt: baseline.at, dirty: changeCount() > 0 });
+    writeJson(sessionStorage, DRAFT_KEY, { graph, baselineAt: baseline.at, liveFingerprint: baseline.fingerprint, dirty: changeCount() > 0 });
     draw();
   }
   function changeCount() {
@@ -346,19 +346,33 @@ export default async function flow(root, ctx) {
     writeJson(localStorage, POS_KEY, pos);
   }
 
+  /** Content of the live flow (ignoring positions), to tell a changed gateway from a refetch. */
+  function liveFingerprint(g) {
+    const nodes = g.nodes.map((n) => `${n.id}:${JSON.stringify(n.data)}`).sort();
+    return JSON.stringify([nodes, g.connections.map(wireKey).sort()]);
+  }
+
   async function sync({ keepDraft = false } = {}) {
     try {
       const topo = await api('/api/topology');
       const fresh = normalizeFlow(topo);
       baseline = {
         at: topo.fetchedAt,
+        fingerprint: liveFingerprint(fresh),
         nodes: new Map(fresh.nodes.map((n) => [n.id, JSON.stringify(n.data)])),
         wires: new Set(fresh.connections.map(wireKey))
       };
       const draft = readJson(sessionStorage, DRAFT_KEY, null);
       if (keepDraft && draft?.dirty && draft.graph) {
         graph = normalizeFlow(draft.graph);
-        render($('[data-banner]'), html`<div class="banner info">${icon('info')}<div>Restored undeployed changes from earlier. <button class="btn sm" data-discard style="margin-left:8px">Discard them</button></div></div>`);
+        // The draft was edited against an older gateway state: say so (deploy re-checks anyway).
+        const stale = draft.baselineAt && draft.baselineAt !== topo.fetchedAt && draft.liveFingerprint !== liveFingerprint(fresh);
+        render(
+          $('[data-banner]'),
+          stale
+            ? html`<div class="banner warn">${icon('alert')}<div>Restored undeployed changes, but the gateway has changed since they were made. Review the deployment carefully: routes added by others may be removed. <button class="btn sm" data-discard style="margin-left:8px">Discard them</button></div></div>`
+            : html`<div class="banner info">${icon('info')}<div>Restored undeployed changes from earlier. <button class="btn sm" data-discard style="margin-left:8px">Discard them</button></div></div>`
+        );
       } else {
         graph = fresh;
         $('[data-banner]').innerHTML = '';
@@ -813,10 +827,16 @@ export default async function flow(root, ctx) {
     } catch (err) {
       return toastError(err);
     }
+    showPlan(body, plan);
+  }
+
+  function showPlan(body, plan, notice) {
     const tone = { add: 'ok', replace: 'info', remove: 'err' };
     const dlg = infoDialog(
       'Review deployment',
-      html`${plan.errors.length ? html`<div class="banner err">${icon('alert')}<div>${plan.errors.map((x) => html`<div>${x}</div>`)}</div></div>` : ''}
+      html`${notice ? html`<div class="banner warn">${icon('alert')}<div>${notice}</div></div>` : ''}
+        ${plan.errors.length ? html`<div class="banner err">${icon('alert')}<div>${plan.errors.map((x) => html`<div>${x}</div>`)}</div></div>` : ''}
+        ${plan.warnings?.length ? html`<div class="banner warn">${icon('alert')}<div>${plan.warnings.map((x) => html`<div>${x}</div>`)}</div></div>` : ''}
         ${plan.steps.length
           ? html`<p class="muted" style="margin-bottom:10px">These jCLI changes run in order in one session, then the configuration is persisted. ${plan.unchanged} item(s) are already up to date.</p>
             ${plan.steps.map((s) => html`<div class="plan-step"><span class="badge ${tone[s.action]}" style="min-width:66px;justify-content:center">${s.action}</span><span class="muted" style="min-width:70px">${s.kind}</span><code>${s.summary}</code></div>`)}`
@@ -832,7 +852,8 @@ export default async function flow(root, ctx) {
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner"></span> Deploying…';
         try {
-          const r = await api('/api/topology/deploy', { method: 'POST', body });
+          // The server re-plans and refuses if the result differs from what is shown here.
+          const r = await api('/api/topology/deploy', { method: 'POST', body: { ...body, fingerprint: plan.fingerprint } });
           dlg.close();
           toast(r.message, 'ok');
           sessionStorage.removeItem(DRAFT_KEY);
@@ -840,9 +861,13 @@ export default async function flow(root, ctx) {
           await sync();
         } catch (err) {
           dlg.close();
+          if (err.status === 409 && err.body?.stale && err.body.plan) {
+            return showPlan(body, err.body.plan, 'The gateway changed since you opened this review (another user, the jCLI terminal or another tab). This is the updated plan; nothing was deployed.');
+          }
           toastError(err, 'Deploy stopped: ');
           if (err.body?.applied?.length) toast(`${err.body.applied.length} change(s) were applied before the failure and persisted.`, 'warn');
-          await sync({ keepDraft: false });
+          // Keep the user's edits: reload the live state as the new baseline and restore the draft on top.
+          await sync({ keepDraft: true });
         }
       };
     }

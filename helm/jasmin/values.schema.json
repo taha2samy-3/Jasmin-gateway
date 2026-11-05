@@ -413,6 +413,9 @@
             "maxHours": {
               "type": "integer",
               "minimum": 1
+            },
+            "persist": {
+              "type": "boolean"
             }
           }
         },
@@ -490,6 +493,38 @@
             },
             "tls": {
               "type": "array"
+            }
+          }
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "audit": {
+          "type": "object",
+          "properties": {
+            "retentionDays": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxFileMB": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "maxTotalMB": {
+              "type": "number",
+              "minimum": 0
+            },
+            "stdout": {
+              "type": "boolean"
             }
           }
         }
@@ -574,6 +609,33 @@
         },
         "logsSize": {
           "type": "string"
+        },
+        "existingClaim": {
+          "type": "string"
+        },
+        "logsEnabled": {
+          "type": "boolean"
+        },
+        "retentionPolicy": {
+          "type": "object",
+          "properties": {
+            "whenDeleted": {
+              "enum": [
+                "Retain",
+                "Delete"
+              ]
+            },
+            "whenScaled": {
+              "enum": [
+                "Retain",
+                "Delete"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "skipTemplateCheck": {
+          "type": "boolean"
         }
       }
     },
@@ -644,6 +706,12 @@
               "type": "string"
             }
           }
+        },
+        "createSecret": {
+          "type": "boolean"
+        },
+        "useSecretRef": {
+          "type": "boolean"
         }
       }
     },
@@ -782,6 +850,9 @@
         },
         "customInterceptorCfg": {
           "type": "string"
+        },
+        "logToStdout": {
+          "type": "boolean"
         }
       }
     },
@@ -1191,6 +1262,44 @@
     "terminationGracePeriodSeconds": {
       "type": "integer",
       "minimum": 0
+    },
+    "envFiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Shell env files sourced at container start (JASMIN_ENV_FILES)."
+    },
+    "command": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "enableServiceLinks": {
+      "type": "boolean"
+    },
+    "extraInitContainers": {
+      "type": "array"
+    },
+    "extraContainers": {
+      "type": "array"
+    },
+    "extraObjects": {
+      "type": "array",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ]
+      }
     }
   }
 }

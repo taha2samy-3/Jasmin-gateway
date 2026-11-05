@@ -3,17 +3,78 @@ set -e
 
 CONFIG_PATH="${CONFIG_PATH:-/etc/jasmin}"
 
-# Ensure JCLI_ADMIN_PASSWORD env var is converted to MD5 hex digest
-# because Jasmin's ConfigFile automatically reads JCLI_ADMIN_PASSWORD from os.environ
-# and JCliConfig runs binascii.unhexlify on it.
-if [ -n "$JCLI_ADMIN_PASSWORD" ]; then
-    if [ ${#JCLI_ADMIN_PASSWORD} -ne 32 ]; then
-        export JCLI_ADMIN_RAW_PASSWORD="${JCLI_ADMIN_PASSWORD}"
-        export JCLI_ADMIN_PASSWORD=$(python -c "import hashlib, os; print(hashlib.md5(os.environ['JCLI_ADMIN_PASSWORD'].encode()).hexdigest())")
-    else
-        export JCLI_ADMIN_RAW_PASSWORD="${JCLI_ADMIN_RAW_PASSWORD:-$JCLI_ADMIN_PASSWORD}"
-    fi
+# --- Environment files (e.g. rendered by the Vault Agent Injector) ------------------------------
+# JASMIN_ENV_FILES: colon-separated list of shell files with `export KEY='value'` lines. They are
+# sourced (executed) by this shell, so only point it at files you control. A listed file that is
+# missing stops the container: starting with fallback credentials would be worse than not starting.
+# Values from these files win over the container env, and the common service names below are
+# mapped onto Jasmin's own variables. Only names actually set by the files are mapped, so the
+# REDIS_PORT=tcp://... style variables Kubernetes injects for Services are never picked up.
+ALIASES="REDIS_HOST:REDIS_CLIENT_HOST REDIS_PORT:REDIS_CLIENT_PORT REDIS_PASSWORD:REDIS_CLIENT_PASSWORD
+RABBITMQ_HOST:AMQP_BROKER_HOST RABBITMQ_PORT:AMQP_BROKER_PORT RABBITMQ_USER:AMQP_BROKER_USER
+RABBITMQ_PASSWORD:AMQP_BROKER_PASSWORD RABBITMQ_VHOST:AMQP_BROKER_VHOST"
+if [ -n "${JASMIN_ENV_FILES:-}" ]; then
+    for pair in $ALIASES; do
+        src="${pair%%:*}"
+        eval "__before_${src}=\${${src}-__unset__}"
+    done
+    old_ifs="$IFS"; IFS=':'
+    for env_file in $JASMIN_ENV_FILES; do
+        IFS="$old_ifs"
+        [ -z "$env_file" ] && continue
+        if [ ! -r "$env_file" ]; then
+            echo "[ERROR] JASMIN_ENV_FILES lists ${env_file}, which does not exist or is not readable" >&2
+            exit 1
+        fi
+        # shellcheck disable=SC1090
+        . "$env_file"
+        echo "[INFO] Loaded environment from ${env_file}"
+    done
+    IFS="$old_ifs"
+    for pair in $ALIASES; do
+        src="${pair%%:*}"; dst="${pair#*:}"
+        eval "before=\${__before_${src}}; now=\${${src}-__unset__}"
+        if [ "$now" != "__unset__" ] && [ "$now" != "$before" ]; then
+            eval "export ${dst}=\"\$now\""
+        fi
+        unset "__before_${src}"
+    done
+    unset before now src dst pair env_file old_ifs
 fi
+unset ALIASES
+
+# --- Log to stdout (JASMIN_LOG_TO_STDOUT=true) ------------------------------------------------------
+# Every Jasmin component switches to a stream handler when its log_file contains "stdout", and
+# reads <SECTION>_LOG_FILE from the environment, so no config rewrite is needed. Logs then go to
+# the container log (kubectl logs, Fluent Bit, Promtail...) and no log volume has to be cleaned.
+# Per-connector SMPP client logs are set per connector in jCLI (`logfile /dev/stdout`).
+if [ "${JASMIN_LOG_TO_STDOUT:-false}" = "true" ]; then
+    for section in SMPP_SERVER SMPP_SERVER_PB CLIENT_MANAGEMENT SERVICE_SMPPCLIENT SM_LISTENER DLR \
+                   DLR_THROWER DELIVERSM_THROWER HTTP_API ROUTER JCLI REDIS_CLIENT AMQP_BROKER \
+                   INTERCEPTOR REST_API; do
+        eval "export ${section}_LOG_FILE=/dev/stdout"
+    done
+    unset section
+    # The HTTP API access log stays a file: Twisted seeks in it, which fails on a pipe
+    # ("Illegal seek" stops the HTTP API). It is small: one line per HTTP request.
+    echo "[INFO] Jasmin logs go to stdout"
+fi
+
+# jCLI admin password. JCLI_ADMIN_PASSWORD is ALWAYS the plain-text password: it is never
+# inspected to guess whether it is already a hash (a random 32-character hex password, e.g.
+# `openssl rand -hex 16`, would otherwise be mistaken for one and login would fail).
+# Jasmin reads JCLI_ADMIN_PASSWORD from the environment as the *stored* password, so the plain
+# value moves to JCLI_ADMIN_RAW_PASSWORD (jasmind -p, bootstrap, console) and JCLI_ADMIN_PASSWORD
+# becomes a salted PBKDF2-SHA256 hash (the image patches jCLI to verify it; no MD5).
+# Unusable passwords (non-ASCII, surrounding spaces, control characters) stop the container here.
+JCLI_PLAIN="${JCLI_ADMIN_PASSWORD:-${JCLI_ADMIN_RAW_PASSWORD:-}}"
+if [ -n "$JCLI_PLAIN" ]; then
+    export JCLI_ADMIN_RAW_PASSWORD="$JCLI_PLAIN"
+    unset JCLI_ADMIN_PASSWORD
+    JCLI_ADMIN_PASSWORD="$(python /usr/local/bin/configure.py --jcli-digest)" || exit 1
+    export JCLI_ADMIN_PASSWORD
+fi
+unset JCLI_PLAIN
 
 # Dynamically update configuration from environment variables if configure.py is present.
 # In Kubernetes jasmin.cfg is usually a read-only ConfigMap mount: in that case the merged

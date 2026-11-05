@@ -171,7 +171,9 @@ export function lintGraph(graph) {
 
   for (const f of graph.nodes.filter((n) => n.type === 'filter')) {
     const spec = FILTER_TYPES[f.data?.type];
-    if (!isValidId(f.data?.fid)) push(f.id, 'error', 'Filter ID must be 1-25 chars: letters, digits, _ or -.');
+    // Inline nodes are copies held by a live route: only a problem when that route is changed (server decides).
+    if (f.data?.inline) continue;
+    if (!/^[A-Za-z0-9_-]{1,16}$/.test(String(f.data?.fid ?? ''))) push(f.id, 'error', 'Filter ID must be 1-16 chars: letters, digits, _ or - (Jasmin limit).');
     if (!spec) {
       push(f.id, 'error', `Unsupported filter type "${f.data?.type}".`);
       continue;
@@ -189,8 +191,22 @@ export function lintGraph(graph) {
     if (!graph.connections.some((c) => c.from === f.id)) push(f.id, 'warning', 'Filter is not used by any route.');
   }
 
+  // Wires from a user straight to a route are drawn but Jasmin has no such link: it would route
+  // every user's traffic, not only this user's. Say so instead of deploying something misleading.
+  for (const w of graph.connections) {
+    const from = graph.nodes.find((x) => x.id === w.from);
+    const to = graph.nodes.find((x) => x.id === w.to);
+    if (from?.type === 'user' && to?.type === 'route') {
+      push(to.id, 'warning', `The wire from user ${from.data?.uid} is only visual: this route applies to all users. Add a UserFilter (uid=${from.data?.uid}) to limit it.`);
+    }
+  }
+
   for (const c of graph.nodes.filter((n) => n.type === 'connector')) {
-    if (!isValidId(c.data?.cid)) push(c.id, 'error', 'Connector ID must be 1-25 chars: letters, digits, _ or -.');
+    if (c.data?.missing) {
+      push(c.id, 'warning', `smppc(${c.data.cid}) no longer exists in the gateway; routes using it cannot be changed until it is recreated.`);
+      continue;
+    }
+    if (!/^[A-Za-z0-9_-]{3,25}$/.test(String(c.data?.cid ?? ''))) push(c.id, 'error', 'Connector ID must be 3-25 chars: letters, digits, _ or - (Jasmin limit).');
   }
 
   for (const u of graph.nodes.filter((n) => n.type === 'user')) {

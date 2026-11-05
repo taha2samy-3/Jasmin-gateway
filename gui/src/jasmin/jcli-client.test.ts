@@ -1,7 +1,7 @@
 import { test, describe, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as net from 'node:net';
-import { JCliClient, JCliError, cleanOutput, parseTable, splitList, filterValueFromDescription } from './jcli-client.js';
+import { JCliClient, JCliError, cleanOutput, parseTable, parseRouteRows, splitList, filterValueFromDescription } from './jcli-client.js';
 import { JCLI_0_11_1 } from './__fixtures__/jasmin-0.11.1.js';
 
 const NL = '\r\r\r\n';
@@ -242,5 +242,33 @@ describe('JCliClient against a protocol-faithful fake console', () => {
     const c = client();
     await assert.rejects(c.deleteUser('nope'), /Unknown User: nope/);
     c.disconnect();
+  });
+});
+
+describe('parseRouteRows (mtrouter -l / morouter -l)', () => {
+  // Same layout as jasmin/protocols/cli/mtrouterm.py: ljust(5/23/10/48/64), never truncated.
+  const mtRow = (order: number, type: string, rate: string, conns: string, filters: string) =>
+    `#${String(order).padEnd(5)} ${type.padEnd(23)} ${rate.padEnd(10)} ${conns.padEnd(48)} ${filters.padEnd(64)}`;
+
+  test('connector list wider than its 48-char column', () => {
+    const conns = 'smppc(carrier_01), smppc(carrier_02), smppc(carrier_03), smppc(carrier_04)';
+    const out = ['#Order Type                    Rate       Connector ID(s)                                  Filter(s)',
+      mtRow(20, 'RandomRoundrobinMTRoute', '0.00500', conns, '<DA (dst_addr=^20)>, <T>'),
+      mtRow(0, 'DefaultRoute', '0 (!)', 'smppc(fallback)', ''),
+      'Total MT Routes: 2'].join('\n');
+    const rows = parseRouteRows(out, true);
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows[0], { order: 20, type: 'RandomRoundrobinMTRoute', rate: 0.005, connectors: ['smppc(carrier_01)', 'smppc(carrier_02)', 'smppc(carrier_03)', 'smppc(carrier_04)'], filters: ['<DA (dst_addr=^20)>', '<T>'] });
+    assert.deepEqual(rows[1], { order: 0, type: 'DefaultRoute', rate: 0, connectors: ['smppc(fallback)'], filters: [] });
+  });
+
+  test('filters containing commas, spaces and parentheses', () => {
+    const out = mtRow(10, 'StaticMTRoute', '1.00000', 'smppc(a)', '<TI (08:00:00,18:00:00)>, <SM (msg=^(hi|hello) there)>');
+    assert.deepEqual(parseRouteRows(out, true)[0].filters, ['<TI (08:00:00,18:00:00)>', '<SM (msg=^(hi|hello) there)>']);
+  });
+
+  test('MO rows have no rate column', () => {
+    const out = `#${'5'.padEnd(5)} ${'StaticMORoute'.padEnd(23)} ${'http(webhook_01)'.padEnd(48)} <C (cid=smpp_in)>`;
+    assert.deepEqual(parseRouteRows(out, false)[0], { order: 5, type: 'StaticMORoute', rate: 0, connectors: ['http(webhook_01)'], filters: ['<C (cid=smpp_in)>'] });
   });
 });

@@ -38,6 +38,7 @@ COPY --chown=node:node package*.json ./
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --chown=node:node public ./public
+COPY --chmod=755 console-entrypoint.sh /usr/local/bin/console-entrypoint.sh
 
 # Console accounts (users.json) and the audit log live here; mount a volume to keep them.
 COPY --from=builder --chown=node:node /app/.data /data
@@ -48,4 +49,6 @@ EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e 'require("http").get("http://127.0.0.1:" + (process.env.PORT || 3000) + "/healthz", (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on("error", () => process.exit(1))'
 
+# Loads JASMIN_ENV_FILES (e.g. Vault Agent output), then hands over to the base image entrypoint.
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/console-entrypoint.sh"]
 CMD ["node", "dist/server.js"]

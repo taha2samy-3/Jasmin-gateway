@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import { JCliClient } from './jcli-client.js';
 import type { GatewaySnapshot } from './gateway.js';
 import type { JasminFilter, JasminMtRoute, JasminUser } from './types.js';
@@ -23,20 +24,57 @@ export interface FlowGraph {
   connections: FlowWire[];
 }
 
-/** jCLI parameter used by `filter -a` for each filter class, and the short tag shown in descriptions. */
-export const FILTER_PARAM: Record<string, { key: string | null; tag: string; descKey?: string }> = {
-  TransparentFilter: { key: null, tag: 'T' },
-  DestinationAddrFilter: { key: 'destination_addr', tag: 'DA', descKey: 'dst_addr' },
-  SourceAddrFilter: { key: 'source_addr', tag: 'SA', descKey: 'src_addr' },
-  ShortMessageFilter: { key: 'short_message', tag: 'SM', descKey: 'msg' },
-  UserFilter: { key: 'uid', tag: 'U', descKey: 'uid' },
-  GroupFilter: { key: 'gid', tag: 'G', descKey: 'gid' },
-  TagFilter: { key: 'tag', tag: 'TG', descKey: 'tag' },
-  ConnectorFilter: { key: 'cid', tag: 'C', descKey: 'cid' },
-  DateIntervalFilter: { key: 'dateInterval', tag: 'DI' },
-  TimeIntervalFilter: { key: 'timeInterval', tag: 'TI' },
-  EvalPyFilter: { key: 'pyCode', tag: 'EPF', descKey: 'pyCode' }
+/**
+ * jCLI parameter used by `filter -a` for each filter class, the short tag Jasmin prints in
+ * descriptions (Filter._repr) and the route kinds it can be used on (Filter.usedFor).
+ */
+export const FILTER_PARAM: Record<string, { key: string | null; tag: string; descKey?: string; usedFor: Array<'mt' | 'mo'> }> = {
+  TransparentFilter: { key: null, tag: 'T', usedFor: ['mt', 'mo'] },
+  DestinationAddrFilter: { key: 'destination_addr', tag: 'DA', descKey: 'dst_addr', usedFor: ['mt', 'mo'] },
+  SourceAddrFilter: { key: 'source_addr', tag: 'SA', descKey: 'src_addr', usedFor: ['mt', 'mo'] },
+  ShortMessageFilter: { key: 'short_message', tag: 'SM', descKey: 'msg', usedFor: ['mt', 'mo'] },
+  UserFilter: { key: 'uid', tag: 'U', descKey: 'uid', usedFor: ['mt'] },
+  GroupFilter: { key: 'gid', tag: 'G', descKey: 'gid', usedFor: ['mt'] },
+  TagFilter: { key: 'tag', tag: 'TG', descKey: 'tag', usedFor: ['mt', 'mo'] },
+  ConnectorFilter: { key: 'cid', tag: 'C', descKey: 'cid', usedFor: ['mo'] },
+  DateIntervalFilter: { key: 'dateInterval', tag: 'DI', usedFor: ['mt', 'mo'] },
+  TimeIntervalFilter: { key: 'timeInterval', tag: 'TI', usedFor: ['mt', 'mo'] },
+  // Jasmin prints only the first 10 characters of the script: `<Ev (pyCode=<10 chars> ..)>`.
+  EvalPyFilter: { key: 'pyCode', tag: 'Ev', descKey: 'pyCode', usedFor: ['mt', 'mo'] }
 };
+
+/** Identifier rules enforced by jCLI 0.11.1 (filtersm.py, smppccm.py). */
+export const FID_RE = /^[A-Za-z0-9_-]{1,16}$/;
+export const CID_RE = /^[A-Za-z0-9_-]{3,25}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^\d{2}:\d{2}:\d{2}$/;
+
+/** Problems jCLI would reject for a filter value (checked before anything is deployed). */
+export function filterValueProblem(type: string, value: string): string | null {
+  const spec = FILTER_PARAM[type];
+  if (!spec) return `unsupported type "${type}"`;
+  if (!spec.key) return null;
+  if (!value) return 'a value is required';
+  if (type === 'DateIntervalFilter' || type === 'TimeIntervalFilter') {
+    const re = type === 'DateIntervalFilter' ? DATE_RE : TIME_RE;
+    const parts = value.split(';');
+    if (parts.length !== 2 || !parts.every((p) => re.test(p))) return `use ${type === 'DateIntervalFilter' ? 'YYYY-MM-DD;YYYY-MM-DD' : 'HH:MM:SS;HH:MM:SS'}`;
+    if (parts[0] >= parts[1]) return 'the right border must be after the left border';
+  }
+  if (type === 'TagFilter' && !/^\d+$/.test(value)) return 'a tag is a non-negative integer';
+  if (['DestinationAddrFilter', 'SourceAddrFilter', 'ShortMessageFilter'].includes(type)) {
+    if (/\(\?P[<=]/.test(value)) return null; // Python named groups: valid for Jasmin, not for JavaScript.
+    try {
+      new RegExp(value);
+    } catch {
+      return 'not a valid regular expression';
+    }
+  }
+  return null;
+}
+
+/** Jasmin lists rates with 5 decimals, so compare at that precision. */
+const rate5 = (n: number) => Math.round(n * 1e5) / 1e5;
 
 /** The description jCLI prints for a filter (used to map route filter lists back to FIDs). */
 export function filterDescription(type: string, value: string): string {
@@ -114,13 +152,21 @@ export function buildTopology(s: GatewaySnapshot, opts: TopologyOptions = {}): F
     const live = s.smppConnectors.find((c) => c.cid === cid);
     if (live) add('connector', id, { ...live, kind: 'smpp', existing: true });
     else {
-      add('connector', id, { cid, kind: 'smpp', missing: true });
+      add('connector', id, { cid, kind: 'smpp', missing: true, existing: true });
       warnings.push(`A route uses smppc(${cid}), which no longer exists in the gateway.`);
     }
     return id;
   };
 
   let inlineSeq = 0;
+  // Two named filters with the same definition print the same description: Jasmin's route listing
+  // cannot tell which FID a route was built with, so the first one is wired. Flag the ambiguity.
+  const byDescription = new Map<string, string[]>();
+  for (const f of s.filters.filter((f) => f.routes.includes('MT'))) byDescription.set(f.description, [...(byDescription.get(f.description) ?? []), f.fid]);
+  for (const [description, fids] of byDescription) {
+    if (fids.length > 1) warnings.push(`Filters ${fids.join(', ')} have the same definition ${description}; routes using it are shown wired to ${fids[0]}. Editing the others will not rebuild those routes.`);
+  }
+
   for (const r of routes) {
     const rid = `route_${r.order}`;
     add('route', rid, { order: r.order, type: r.type, rate: r.rate, existing: true });
@@ -161,6 +207,8 @@ export interface PlanStep {
 export interface DeployPlan {
   steps: PlanStep[];
   errors: string[];
+  /** Not blocking, but shown in the review (e.g. the DefaultRoute will be removed). */
+  warnings: string[];
   unchanged: number;
 }
 
@@ -192,6 +240,7 @@ const sameSet = (a: string[], b: string[]) => sameList([...a].sort(), [...b].sor
 export function planDeploy(graph: FlowGraph, s: GatewaySnapshot, opts: { prune?: boolean } = {}): DeployPlan {
   const steps: PlanStep[] = [];
   const errors: string[] = [];
+  const warnings: string[] = [];
   let unchanged = 0;
 
   // Groups and users ---------------------------------------------------------
@@ -240,6 +289,13 @@ export function planDeploy(graph: FlowGraph, s: GatewaySnapshot, opts: { prune?:
       unchanged++;
       continue;
     }
+    // Placeholder for a connector a live route still references but that no longer exists:
+    // nothing to create; only an error if a changed route wants to use it (checked below).
+    if (d.missing) continue;
+    if (!CID_RE.test(String(d.cid ?? ''))) {
+      errors.push(`SMPP connector "${d.cid}": ID must be 3-25 characters (letters, digits, _ or -).`);
+      continue;
+    }
     if (!d.host || !d.port || !d.username || !d.password) {
       errors.push(`SMPP connector "${d.cid}" is new: host, port, system ID and password are required.`);
       continue;
@@ -258,10 +314,7 @@ export function planDeploy(graph: FlowGraph, s: GatewaySnapshot, opts: { prune?:
   const usedFilterNodes = new Set(graph.connections.filter((w) => graph.nodes.find((n) => n.id === w.to)?.type === 'route').map((w) => w.from));
   for (const n of graph.nodes.filter((n) => n.type === 'filter')) {
     const d = n.data;
-    if (d.inline) {
-      if (usedFilterNodes.has(n.id)) errors.push(`Route uses unnamed filter ${d.description}: open it and give it a Filter ID, type and value.`);
-      continue;
-    }
+    if (d.inline) continue; // Only an error when a changed route uses it (see MT routes).
     const spec = FILTER_PARAM[d.type];
     if (!spec) {
       errors.push(`Filter "${d.fid}": unsupported type "${d.type}".`);
@@ -269,6 +322,21 @@ export function planDeploy(graph: FlowGraph, s: GatewaySnapshot, opts: { prune?:
     }
     const value = String(d.value ?? '').trim();
     const live = s.filters.find((f) => f.fid === d.fid);
+    if (!FID_RE.test(String(d.fid ?? ''))) {
+      errors.push(`Filter "${d.fid}": ID must be 1-16 characters (letters, digits, _ or -).`);
+      continue;
+    }
+    if (usedFilterNodes.has(n.id) && !spec.usedFor.includes('mt')) {
+      errors.push(`Filter "${d.fid}": ${d.type} only works on MO routes and cannot be used on an MT route.`);
+      continue;
+    }
+    if (!(live && live.type === d.type && live.value === value)) {
+      const problem = filterValueProblem(d.type, value);
+      if (problem) {
+        errors.push(`Filter "${d.fid}" (${d.type}): ${problem}.`);
+        continue;
+      }
+    }
     if (live && live.type === d.type && live.value === value) {
       unchanged++;
       continue;
@@ -289,14 +357,32 @@ export function planDeploy(graph: FlowGraph, s: GatewaySnapshot, opts: { prune?:
 
   // MT routes ----------------------------------------------------------------
   const desiredOrders = new Set<number>();
+  const MT_TYPES = ['DefaultRoute', 'StaticMTRoute', 'RandomRoundrobinMTRoute', 'FailoverMTRoute'];
   for (const n of graph.nodes.filter((n) => n.type === 'route')) {
     const d = n.data;
-    const order = d.type === 'DefaultRoute' ? 0 : Number(d.order);
-    const rate = Number(d.rate ?? 0) || 0;
-    const fids = wiredFilters(graph, n.id).map((f) => f.data.fid).filter(Boolean);
-    const cids = wiredConnectors(graph, n.id).map((c) => c.data.cid);
+    const isDefault = d.type === 'DefaultRoute';
+    const order = isDefault ? 0 : d.order === '' || d.order === null || d.order === undefined ? NaN : Number(d.order);
+    const label = Number.isFinite(order) ? `#${order}` : `"${n.id}"`;
+    if (!MT_TYPES.includes(d.type)) {
+      errors.push(`Route ${label}: unsupported type "${d.type}".`);
+      continue;
+    }
+    if (!isDefault && (!Number.isInteger(order) || order < 1)) {
+      errors.push(`Route ${label}: order must be an integer ≥ 1 (0 is reserved for the DefaultRoute).`);
+      continue;
+    }
+    const rate = Number(d.rate ?? 0);
+    if (!Number.isFinite(rate) || rate < 0) {
+      errors.push(`Route ${label}: rate must be a number ≥ 0.`);
+      continue;
+    }
+    const filterNodes = wiredFilters(graph, n.id);
+    const connectorNodes = wiredConnectors(graph, n.id);
+    // Inline nodes stand for a filter copy the live route still holds; compare them by description.
+    const fids = filterNodes.map((f) => (f.data.inline ? `?${f.data.description}` : f.data.fid)).filter(Boolean);
+    const cids = connectorNodes.map((c) => c.data.cid);
     if (cids.length === 0) {
-      errors.push(`Route #${order} has no connector.`);
+      errors.push(`Route ${label} has no connector.`);
       continue;
     }
     if (desiredOrders.has(order)) {
@@ -310,7 +396,7 @@ export function planDeploy(graph: FlowGraph, s: GatewaySnapshot, opts: { prune?:
       const liveFids = resolveRouteFilters(live, s.filters).map((f) => f.fid ?? `?${f.description}`);
       const same =
         live.type === d.type &&
-        Math.abs(live.rate - rate) < 1e-9 &&
+        rate5(live.rate) === rate5(rate) &&
         sameList(live.connectors.map(cidOf), cids) &&
         sameSet(liveFids, fids) &&
         !fids.some((f) => changedFilters.has(f));
@@ -318,6 +404,18 @@ export function planDeploy(graph: FlowGraph, s: GatewaySnapshot, opts: { prune?:
         unchanged++;
         continue;
       }
+    }
+    // The route will be (re)written: everything it references must be deployable.
+    const routeProblems: string[] = [];
+    if (isDefault && (cids.length !== 1 || fids.length)) routeProblems.push('a DefaultRoute takes exactly one connector and no filters');
+    if (d.type === 'StaticMTRoute' && cids.length !== 1) routeProblems.push('a StaticMTRoute takes exactly one connector');
+    if ((d.type === 'RandomRoundrobinMTRoute' || d.type === 'FailoverMTRoute') && cids.length < 2) routeProblems.push(`a ${d.type} needs at least two connectors`);
+    if (!isDefault && fids.length === 0) routeProblems.push(`a ${d.type} needs at least one filter`);
+    for (const f of filterNodes) if (f.data.inline) routeProblems.push(`unnamed filter ${f.data.description}: open it and give it a Filter ID, type and value`);
+    for (const c of connectorNodes) if (c.data.missing) routeProblems.push(`connector smppc(${c.data.cid}) no longer exists`);
+    if (routeProblems.length) {
+      errors.push(`Route ${label}: ${routeProblems.join('; ')}.`);
+      continue;
     }
     steps.push({
       action: live ? 'replace' : 'add',
@@ -333,19 +431,36 @@ export function planDeploy(graph: FlowGraph, s: GatewaySnapshot, opts: { prune?:
     for (const r of s.mtRoutes) {
       if (desiredOrders.has(r.order)) continue;
       steps.push({ action: 'remove', kind: 'route', id: String(r.order), summary: `#${r.order} ${r.type}`, run: (c) => c.deleteMtRoute(r.order) });
+      if (r.order === 0) warnings.push('The DefaultRoute (#0) will be removed: messages that match no other route will be rejected.');
     }
+  }
+  if (steps.some((st) => st.action === 'remove')) {
+    const n = steps.filter((st) => st.action === 'remove').length;
+    warnings.push(`${n} live route(s) are not in the flow and will be removed (prune).`);
   }
 
   // Execution order: groups, users, connectors, filters, then routes (routes reference the others).
   const rank = { group: 0, user: 1, connector: 2, filter: 3, route: 4 } as const;
   steps.sort((a, b) => rank[a.kind] - rank[b.kind]);
-  return { steps, errors, unchanged };
+  return { steps, errors, warnings, unchanged };
+}
+
+/**
+ * Identifies a plan by what it would do. The deploy endpoint recomputes the plan from a fresh
+ * snapshot and refuses when it differs from the plan the user reviewed (someone else changed the
+ * gateway in between, or the editor worked from a stale baseline).
+ */
+export function planFingerprint(plan: DeployPlan): string {
+  const body = JSON.stringify(plan.steps.map(({ action, kind, id, summary }) => [action, kind, id, summary]));
+  return crypto.createHash('sha256').update(body).digest('hex').slice(0, 32);
 }
 
 /** Serializable view of a plan (functions removed). */
 export function describePlan(plan: DeployPlan) {
   return {
     errors: plan.errors,
+    warnings: plan.warnings,
+    fingerprint: planFingerprint(plan),
     unchanged: plan.unchanged,
     steps: plan.steps.map(({ action, kind, id, summary }) => ({ action, kind, id, summary }))
   };
@@ -374,7 +489,8 @@ export interface SimulationInput {
   source_addr?: string;
   destination_addr: string;
   text?: string;
-  tags?: number[];
+  /** Jasmin compares tags as strings. */
+  tags?: Array<string | number>;
   at?: Date;
 }
 
@@ -413,8 +529,10 @@ function evalFilter(type: string, value: string, input: SimulationInput, user?: 
       return { matched: input.uid === value, reason: input.uid ? `user ${input.uid} ${input.uid === value ? '=' : '≠'} ${value}` : 'no user given' };
     case 'GroupFilter':
       return { matched: !!user && user.gid === value, reason: user ? `group ${user.gid} ${user.gid === value ? '=' : '≠'} ${value}` : 'user unknown, group cannot be resolved' };
-    case 'TagFilter':
-      return { matched: (input.tags ?? []).includes(Number(value)), reason: `tag ${value} ${(input.tags ?? []).includes(Number(value)) ? 'present' : 'absent'}` };
+    case 'TagFilter': {
+      const present = (input.tags ?? []).map(String).includes(String(value));
+      return { matched: present, reason: `tag ${value} ${present ? 'present' : 'absent'}` };
+    }
     case 'TimeIntervalFilter': {
       const [a, b] = value.split(';');
       const now = (input.at ?? new Date()).toTimeString().slice(0, 8);
@@ -423,7 +541,9 @@ function evalFilter(type: string, value: string, input: SimulationInput, user?: 
     }
     case 'DateIntervalFilter': {
       const [a, b] = value.split(';');
-      const today = (input.at ?? new Date()).toISOString().slice(0, 10);
+      // Jasmin uses the gateway's local date (datetime.now()), like the time filter below.
+      const at = input.at ?? new Date();
+      const today = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
       const m = !!a && !!b && today >= a && today <= b;
       return { matched: m, reason: `date ${today} ${m ? 'inside' : 'outside'} ${a}–${b}` };
     }
@@ -444,7 +564,9 @@ export function simulateMtRouting(s: GatewaySnapshot, input: SimulationInput) {
     for (const rf of resolveRouteFilters(route, s.filters)) {
       const f = rf.fid ? s.filters.find((x) => x.fid === rf.fid) : undefined;
       const type = f?.type ?? Object.keys(FILTER_PARAM).find((t) => rf.description.startsWith(`<${FILTER_PARAM[t].tag} `) || rf.description === `<${FILTER_PARAM[t].tag}>`) ?? '';
-      const value = f?.value ?? rf.description.replace(/^<\w+ \((?:\w+=)?(.*)\)>$/, '$1').replace(',', ';');
+      const raw = f?.value ?? rf.description.replace(/^<\w+ \((?:\w+=)?(.*)\)>$/, '$1');
+      // Only interval borders are comma-separated in descriptions; regexes keep their commas.
+      const value = !f && (type === 'DateIntervalFilter' || type === 'TimeIntervalFilter') ? raw.replace(',', ';') : raw;
       const v = evalFilter(type, value, input, user);
       verdicts.push({ fid: rf.fid ?? '(unnamed)', description: rf.description, matched: v.matched, reason: v.reason });
       if (v.matched === false) {

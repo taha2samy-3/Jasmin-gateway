@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as http from 'node:http';
 import express from 'express';
-import { Auth } from './auth.js';
+import { Auth, Limiter, sameOrigin } from './auth.js';
 import { can, hashPassword, UserStore, verifyPassword } from './store.js';
 
 describe('password hashing and RBAC table', () => {
@@ -164,5 +164,72 @@ describe('Auth over HTTP', () => {
     let last = 0;
     for (let i = 0; i < 11; i++) last = (await c('POST', '/auth/login', { username: 'ratelimited', password: 'x' })).status;
     assert.equal(last, 429);
+  });
+});
+
+describe('sameOrigin', () => {
+  test('accepts a missing or matching Origin', () => {
+    assert.equal(sameOrigin(undefined, 'console.example.com'), true);
+    assert.equal(sameOrigin('https://console.example.com', 'console.example.com'), true);
+    assert.equal(sameOrigin('http://localhost:3000', 'localhost:3000'), true);
+  });
+  test('rejects other hosts and unparsable values without throwing', () => {
+    assert.equal(sameOrigin('https://evil.example', 'console.example.com'), false);
+    assert.equal(sameOrigin('null', 'console.example.com'), false);
+    assert.equal(sameOrigin('not a url', 'console.example.com'), false);
+  });
+});
+
+describe('sessions survive a console restart', () => {
+  test('a cookie stays valid for a new Auth on the same DATA_DIR, and logout revokes it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jc-sess-'));
+    const make = () => {
+      const a = new Auth({ store: new UserStore(dir), bootstrapAdmin: { username: 'admin', password: 'Restart-Test-Pass' }, sessionIdleMinutes: 60, sessionMaxHours: 12 });
+      a.bootstrap();
+      const app = express();
+      app.use(a.authenticate);
+      a.mount(app);
+      return { a, app };
+    };
+    const listen = async (app: express.Express) => {
+      const srv = http.createServer(app);
+      await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+      return { srv, url: `http://127.0.0.1:${(srv.address() as any).port}` };
+    };
+    const h = { 'X-Requested-With': 'jasmin-console', 'Content-Type': 'application/json' };
+
+    const first = make();
+    const s1 = await listen(first.app);
+    const login = await fetch(`${s1.url}/auth/login`, { method: 'POST', headers: h, body: JSON.stringify({ username: 'admin', password: 'Restart-Test-Pass' }) });
+    const cookie = login.headers.get('set-cookie')!.split(';')[0];
+    first.a.close();
+    s1.srv.close();
+
+    // The raw session id is never written to disk.
+    const onDisk = fs.readFileSync(path.join(dir, 'sessions.json'), 'utf8');
+    assert.ok(!onDisk.includes(cookie.split('=')[1]));
+
+    const second = make();
+    const s2 = await listen(second.app);
+    assert.equal((await fetch(`${s2.url}/api/auth/me`, { headers: { Cookie: cookie } })).status, 200);
+    await fetch(`${s2.url}/auth/logout`, { method: 'POST', headers: { ...h, Cookie: cookie } });
+    second.a.close();
+    s2.srv.close();
+
+    const third = make();
+    const s3 = await listen(third.app);
+    assert.equal((await fetch(`${s3.url}/api/auth/me`, { headers: { Cookie: cookie } })).status, 401);
+    third.a.close();
+    s3.srv.close();
+  });
+});
+
+describe('Limiter', () => {
+  test('sweep drops expired windows', () => {
+    const l = new Limiter(2, 1);
+    for (let i = 0; i < 100; i++) l.hit(`user${i}`);
+    assert.equal(l.size, 100);
+    l.sweep(Date.now() + 10);
+    assert.equal(l.size, 0);
   });
 });

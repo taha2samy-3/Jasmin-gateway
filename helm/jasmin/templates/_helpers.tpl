@@ -117,3 +117,99 @@ Ingress host (https when TLS is configured) or the first console HTTPRoute hostn
 {{- printf "https://%s" (first .Values.dashboard.httpRoute.hostnames) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Environment shared by the Jasmin and console containers:
+ - JASMIN_ENV_FILES: shell env files sourced at start (e.g. Vault Agent output), from .Values.envFiles;
+ - JASMIN_LOG_TO_STDOUT: Jasmin logs (and connectors created by the console) go to the container log.
+*/}}
+{{- define "jasmin.commonRuntimeEnv" -}}
+{{- with .Values.envFiles }}
+- name: JASMIN_ENV_FILES
+  value: {{ join ":" . | quote }}
+{{- end }}
+- name: JASMIN_LOG_TO_STDOUT
+  value: {{ ternary "true" "false" .Values.config.logToStdout | quote }}
+{{- end -}}
+
+{{/*
+"true" when the logs directory gets its own PersistentVolumeClaim.
+*/}}
+{{- define "jasmin.logsClaim" -}}
+{{- if and .Values.persistence.enabled (ne .Values.persistence.logsEnabled false) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+volumeClaimTemplates entries (a YAML list, possibly empty).
+*/}}
+{{- define "jasmin.volumeClaimTemplates" -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: store
+    {{- with .Values.persistence.annotations }}
+    annotations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  spec:
+    accessModes:
+      - {{ .Values.persistence.accessMode | quote }}
+    {{- if .Values.persistence.storageClass }}
+    storageClassName: {{ .Values.persistence.storageClass | quote }}
+    {{- end }}
+    resources:
+      requests:
+        storage: {{ .Values.persistence.size | quote }}
+{{- end }}
+{{- if include "jasmin.logsClaim" . }}
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: logs
+  spec:
+    accessModes:
+      - {{ .Values.persistence.accessMode | quote }}
+    {{- if .Values.persistence.storageClass }}
+    storageClassName: {{ .Values.persistence.storageClass | quote }}
+    {{- end }}
+    resources:
+      requests:
+        storage: {{ .Values.persistence.logsSize | default "2Gi" | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
+StatefulSet volumeClaimTemplates are immutable: changing a PVC size, adding/removing the logs
+claim or switching to existingClaim makes `helm upgrade` fail with an opaque "Forbidden" error.
+When the live StatefulSet can be read (helm install/upgrade; not `helm template` or Argo CD),
+stop early with the procedure instead. Set persistence.skipTemplateCheck=true to bypass.
+*/}}
+{{- define "jasmin.guardVolumeClaimTemplates" -}}
+{{- if not .Values.persistence.skipTemplateCheck }}
+{{- $live := lookup "apps/v1" "StatefulSet" .Release.Namespace (include "jasmin.fullname" .) }}
+{{- if $live }}
+{{- $have := list }}
+{{- range ($live.spec.volumeClaimTemplates | default list) }}
+{{- $have = append $have (printf "%s=%v" .metadata.name .spec.resources.requests.storage) }}
+{{- end }}
+{{- $want := list }}
+{{- range (include "jasmin.volumeClaimTemplates" . | fromYamlArray) }}
+{{- $want = append $want (printf "%s=%v" .metadata.name .spec.resources.requests.storage) }}
+{{- end }}
+{{- if ne (join "," (sortAlpha $have)) (join "," (sortAlpha $want)) }}
+{{- fail (printf `
+
+StatefulSet %s: its PVC templates would change (live: [%s], requested: [%s]).
+Kubernetes does not allow changing volumeClaimTemplates in place. To apply it:
+  1. Grow existing PVCs directly (StorageClass needs allowVolumeExpansion: true):
+       kubectl -n %s patch pvc <claim>-%s-0 -p '{"spec":{"resources":{"requests":{"storage":"<size>"}}}}'
+  2. Remove the StatefulSet object but keep the pod and its PVCs running:
+       kubectl -n %s delete statefulset %s --cascade=orphan
+  3. Run the upgrade again (Argo CD: sync). The new StatefulSet adopts the running pod and PVCs.
+Set persistence.skipTemplateCheck=true to skip this check.
+` (include "jasmin.fullname" .) (join ", " $have) (join ", " $want) .Release.Namespace (include "jasmin.fullname" .) .Release.Namespace (include "jasmin.fullname" .)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end -}}

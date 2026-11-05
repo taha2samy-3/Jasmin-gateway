@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { AuditEntry, AuditLog, AuditLogOptions } from './audit-log.js';
 
 export const ROLES = ['admin', 'operator', 'viewer'] as const;
 export type Role = (typeof ROLES)[number];
@@ -78,32 +79,30 @@ export function passwordProblem(password: string): string | null {
 }
 
 // --- File-backed store -----------------------------------------------------------------------
-export interface AuditEntry {
-  at: string;
-  actor: string;
-  action: string;
-  target?: string;
-  detail?: unknown;
-  ip?: string;
-}
+export type { AuditEntry } from './audit-log.js';
 
 /**
- * Console accounts and audit log, stored as JSON in DATA_DIR.
- * Writes are atomic (temp file + rename) so a crash never leaves a half-written file.
+ * Console accounts and audit log, stored in DATA_DIR.
+ * Account writes are atomic (temp file + rename) so a crash never leaves a half-written file.
+ * The audit log has its own lifecycle (rotation, retention): see AuditLog.
  */
 export class UserStore {
   private users: ConsoleUser[] = [];
   private readonly usersFile: string;
-  private readonly auditFile: string;
+  readonly auditLog: AuditLog;
 
-  constructor(private readonly dataDir: string) {
+  constructor(private readonly dataDir: string, auditOptions: Partial<AuditLogOptions> = {}) {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.usersFile = path.join(dataDir, 'users.json');
-    this.auditFile = path.join(dataDir, 'audit.log');
     if (fs.existsSync(this.usersFile)) {
       const parsed = JSON.parse(fs.readFileSync(this.usersFile, 'utf8'));
       this.users = Array.isArray(parsed.users) ? parsed.users : [];
     }
+    this.auditLog = new AuditLog(dataDir, auditOptions);
+  }
+
+  get dir() {
+    return this.dataDir;
   }
 
   private save() {
@@ -153,23 +152,10 @@ export class UserStore {
   }
 
   audit(entry: Omit<AuditEntry, 'at'>) {
-    const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
-    fs.appendFileSync(this.auditFile, line + '\n', { mode: 0o600 });
+    this.auditLog.append(entry);
   }
 
-  readAudit(limit = 200): AuditEntry[] {
-    if (!fs.existsSync(this.auditFile)) return [];
-    const lines = fs.readFileSync(this.auditFile, 'utf8').trim().split('\n').filter(Boolean);
-    return lines
-      .slice(-limit)
-      .reverse()
-      .map((l) => {
-        try {
-          return JSON.parse(l);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+  readAudit(limit = 200, filter?: Parameters<AuditLog['read']>[1]): AuditEntry[] {
+    return this.auditLog.read(limit, filter);
   }
 }

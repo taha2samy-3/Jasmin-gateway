@@ -1328,3 +1328,18 @@ dialog.modal::backdrop {
     display: none;
   }
 }
+
+/* Audit log retention summary */
+.audit-lifecycle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 8px 16px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.audit-lifecycle .icon {
+  width: 14px;
+  height: 14px;
+}

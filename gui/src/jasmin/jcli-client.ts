@@ -36,7 +36,8 @@ const PROMPT_RE = /(?:^|\n)(?:jcli : |> )$/;
 // Telnet IAC negotiation and terminal control sequences sent by Jasmin's console on connect.
 const IAC_RE = /\xff[\xfb-\xfe][\s\S]|\xff[\xf0-\xfa]|\x1b(?:\[[0-9;]*[a-zA-Z]|c)/g;
 // Error lines observed from Jasmin 0.11.1 jCLI.
-const ERROR_RE = /^(?:Unknown .*|Error:.*|Invalid .*|You must .*|This route order .*|\[IO\].*|Incorrect .*|.* cannot .*)$/m;
+const ERROR_RE =
+  /^(?:Unknown .*|Error:.*|Invalid .*|You must .*|This route order .*|\[IO\].*|Incorrect .*|.* cannot .*|.* is not a valid .*|.* must contain .*|.* must be .*|Right border .*|Failed .*)$/m;
 
 /**
  * Normalise a raw jCLI response: strip telnet noise and `\r`, drop the echoed command line
@@ -136,6 +137,35 @@ export function filterValueFromDescription(description: string): string {
   const interval = description.match(/^<(?:TI|DI) \((.*),(.*)\)>$/);
   if (interval) return `${interval[1]};${interval[2]}`;
   return '';
+}
+
+/**
+ * Parse `mtrouter -l` / `morouter -l` rows by their structure rather than by column offsets:
+ * `#<order> <Type> [<rate>] <type(cid)>[, <type(cid)>...] [<filter repr>, ...]`.
+ * Jasmin pads the connector column to 48 characters but does not truncate it, so a list of
+ * connectors wider than the column shifts the filters right; column slicing then splits a
+ * connector into the filter cell. Connector tokens and filter reprs are unambiguous instead.
+ */
+export function parseRouteRows(output: string, withRate: boolean) {
+  const rows: { order: number; type: string; rate: number; connectors: string[]; filters: string[] }[] = [];
+  const rate = withRate ? String.raw`(0 \(!\)|-?[\d.]+)\s+` : '';
+  const re = new RegExp(String.raw`^#(\d+)\s+(\S+)\s+${rate}((?:\w+\([^()]*\))(?:,\s*\w+\([^()]*\))*)\s*(.*)$`);
+  for (const raw of output.replace(/\r/g, '').split('\n')) {
+    const line = raw.trim();
+    const m = re.exec(line);
+    if (!m) continue;
+    const [, order, type, ...rest] = m;
+    const rateText = withRate ? rest.shift()! : '0';
+    const [connectorText, filterText] = rest;
+    rows.push({
+      order: parseInt(order, 10),
+      type,
+      rate: toNumber(rateText.replace(/\s*\(!\)/, '')),
+      connectors: splitList(connectorText),
+      filters: splitList(filterText.trim())
+    });
+  }
+  return rows;
 }
 
 function toNumber(v: string | undefined): number {
@@ -427,10 +457,13 @@ export class JCliClient {
     password: string;
     systemType?: string;
     bind?: string;
+    /** Connector log file; '/dev/stdout' sends it to the container log. */
+    logFile?: string;
   }): Promise<void> {
     const lines = [`cid ${conn.cid}`, `host ${conn.host}`, `port ${conn.port}`, `username ${conn.username}`, `password ${conn.password}`];
     if (conn.systemType) lines.push(`systype ${conn.systemType}`);
     if (conn.bind) lines.push(`bind ${conn.bind}`);
+    if (conn.logFile) lines.push(`logfile ${conn.logFile}`);
     await this.addSession('smppccm -a', lines);
   }
 
@@ -451,36 +484,24 @@ export class JCliClient {
   // --- Routers ----------------------------------------------------------------
 
   public async getMoRoutes(): Promise<JasminMoRoute[]> {
-    const rows = parseTable(await this.executeCommand('morouter -l'), ['Order', 'Type', 'Connector ID(s)', 'Filter(s)']);
-    return rows
-      .filter((r) => r[0] !== '' && !isNaN(parseInt(r[0], 10)))
-      .map((r) => {
-        const connectors = splitList(r[2] ?? '');
-        return {
-          order: parseInt(r[0], 10),
-          type: r[1] ?? '',
-          connector: connectors.join(';'),
-          connectors,
-          filters: splitList(r[3] ?? '')
-        };
-      });
+    return parseRouteRows(await this.executeCommand('morouter -l'), false).map(({ order, type, connectors, filters }) => ({
+      order,
+      type,
+      connector: connectors.join(';'),
+      connectors,
+      filters
+    }));
   }
 
   public async getMtRoutes(): Promise<JasminMtRoute[]> {
-    const rows = parseTable(await this.executeCommand('mtrouter -l'), ['Order', 'Type', 'Rate', 'Connector ID(s)', 'Filter(s)']);
-    return rows
-      .filter((r) => r[0] !== '' && !isNaN(parseInt(r[0], 10)))
-      .map((r) => {
-        const connectors = splitList(r[3] ?? '');
-        return {
-          order: parseInt(r[0], 10),
-          type: r[1] ?? '',
-          rate: toNumber(r[2]),
-          connector: connectors.join(';'),
-          connectors,
-          filters: splitList(r[4] ?? '')
-        };
-      });
+    return parseRouteRows(await this.executeCommand('mtrouter -l'), true).map(({ order, type, rate, connectors, filters }) => ({
+      order,
+      type,
+      rate,
+      connector: connectors.join(';'),
+      connectors,
+      filters
+    }));
   }
 
   private static typedConnector(c: string, fallbackType: 'smppc' | 'http'): string {

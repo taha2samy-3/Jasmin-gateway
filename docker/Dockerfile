@@ -25,6 +25,12 @@ RUN LISTENERS="$(/opt/venv/bin/python -c 'import importlib.util as u; print(u.fi
       echo "submit_sm_resp DLR handling already fixed upstream; no patch needed"; \
     fi
 
+# jCLI admin password: verify salted PBKDF2-SHA256 instead of upstream's unsalted MD5.
+# The patcher fails the build if the upstream source does not match exactly.
+COPY patches/ /build/patches/
+RUN /opt/venv/bin/python /build/patches/patch_jcli_pwhash.py \
+      "$(/opt/venv/bin/python -c 'import jasmin, os; print(os.path.dirname(jasmin.__file__))')"
+
 # Runtime Stage: Minimal hardened Wolfi Python image (No Alpine, stripped binaries)
 FROM ghcr.io/taha2samy-3/python:3.12 AS runner
 
@@ -59,6 +65,7 @@ COPY --chown=jasmin:jasmin config/resource/ ${RESOURCE_PATH}/
 
 # Copy dynamic configuration helper, bootstrap provisioner, and entrypoint
 COPY --chown=jasmin:jasmin configure.py /usr/local/bin/configure.py
+COPY --chown=jasmin:jasmin patches/jcli_pwhash.py /usr/local/bin/jcli_pwhash.py
 COPY --chown=jasmin:jasmin bootstrap-routes.py /usr/local/bin/bootstrap-routes.py
 COPY --chown=jasmin:jasmin docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/configure.py /usr/local/bin/bootstrap-routes.py /docker-entrypoint.sh

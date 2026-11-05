@@ -15,7 +15,20 @@ metadata:
   {{- end }}
 spec:
   parentRefs:
-    {{- toYaml $parents | nindent 4 }}
+    {{- range $parents }}
+    - group: {{ .group | default "gateway.networking.k8s.io" }}
+      kind: {{ .kind | default "Gateway" }}
+      name: {{ .name }}
+      {{- with .namespace }}
+      namespace: {{ . }}
+      {{- end }}
+      {{- with .sectionName }}
+      sectionName: {{ . }}
+      {{- end }}
+      {{- with .port }}
+      port: {{ . }}
+      {{- end }}
+    {{- end }}
   # The console runs at the root of its own hostname (it cannot live under a sub-path).
   hostnames:
     {{- toYaml .Values.dashboard.httpRoute.hostnames | nindent 4 }}
@@ -25,6 +38,9 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: {{ include "jasmin.fullname" . }}-admin
+        - group: ""
+          kind: Service
+          name: {{ include "jasmin.fullname" . }}-admin
           port: {{ .Values.dashboard.port }}
+          weight: 1
 {{- end }}

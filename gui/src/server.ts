@@ -8,7 +8,7 @@ import { JCliError } from './jasmin/jcli-client.js';
 import { JasminGateway } from './jasmin/gateway.js';
 import { ConfigReader } from './jasmin/config-reader.js';
 import { AmqpTap, JasminTrafficMessage } from './jasmin/amqp-tap.js';
-import { Auth } from './auth/auth.js';
+import { Auth, sameOrigin } from './auth/auth.js';
 import { can, ROLES, Role, UserStore } from './auth/store.js';
 import {
   applyPlan,
@@ -17,6 +17,7 @@ import {
   FILTER_PARAM,
   FlowGraph,
   planDeploy,
+  planFingerprint,
   resolveRouteFilters,
   simulateMtRouting
 } from './jasmin/topology.js';
@@ -40,13 +41,15 @@ const HTTP_API_URL = env.HTTP_API_URL || `http://127.0.0.1:${HTTP_API_PORT}`;
 const PORT = parseInt(env.PORT || '3000', 10);
 const PUBLIC_URL = (env.PUBLIC_URL || `http://localhost:${env.PORT || '3000'}`).replace(/\/$/, '');
 const DATA_DIR = env.DATA_DIR || path.join(process.cwd(), 'data');
+// Jasmin logs to stdout (chart: config.logToStdout): new SMPP connectors follow, instead of files.
+const LOG_TO_STDOUT = env.JASMIN_LOG_TO_STDOUT === 'true';
 
 const amqpSec = sec('amqp-broker');
 const amqpTap = new AmqpTap({
   host: env.RABBITMQ_HOST || amqpSec.host || '127.0.0.1',
   port: parseInt(env.RABBITMQ_PORT || amqpSec.port || '5672', 10),
   username: env.RABBITMQ_USER || amqpSec.username || 'guest',
-  password: env.RABBITMQ_PASS || amqpSec.password || 'guest',
+  password: env.RABBITMQ_PASS || env.RABBITMQ_PASSWORD || amqpSec.password || 'guest',
   vhost: env.RABBITMQ_VHOST || amqpSec.vhost || '/',
   maxBufferSize: 10000
 });
@@ -71,8 +74,15 @@ const parseRoleMap = (raw: string | undefined) => {
   return map;
 };
 
+const mb = (v: string | undefined, fallback: number) => (v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : fallback) * 1024 * 1024;
 const auth = new Auth({
-  store: new UserStore(DATA_DIR),
+  store: new UserStore(DATA_DIR, {
+    retentionDays: Number(env.AUDIT_RETENTION_DAYS ?? 180),
+    maxFileBytes: mb(env.AUDIT_MAX_FILE_MB, 20),
+    maxTotalBytes: mb(env.AUDIT_MAX_TOTAL_MB, 500),
+    stdout: env.AUDIT_STDOUT === 'true'
+  }),
+  persistSessions: env.SESSION_PERSIST !== 'false',
   publicUrl: PUBLIC_URL,
   bootstrapAdmin: { username: env.ADMIN_USERNAME || 'admin', password: env.ADMIN_PASSWORD || undefined },
   sessionIdleMinutes: Number(env.SESSION_IDLE_MINUTES || 60),
@@ -320,7 +330,7 @@ app.post(
     const s = await gateway.snapshot(true);
     if (s.smppConnectors.some((c) => c.cid === cid)) throw new HttpError(409, `Connector ${cid} already exists`);
     await change(req, res, `SMPP connector ${cid} created`, (c) =>
-      c.createSmppConnector({ cid, host, port, username, password, systemType: req.body.systemType || undefined })
+      c.createSmppConnector({ cid, host, port, username, password, systemType: req.body.systemType || undefined, logFile: LOG_TO_STDOUT ? '/dev/stdout' : undefined })
     );
   })
 );
@@ -371,6 +381,12 @@ app.delete(
   })
 );
 
+const requireOrder = (value: unknown) => {
+  const order = Number(value);
+  if (!Number.isInteger(order) || order < 0) throw new HttpError(400, 'Route order must be an integer ≥ 0');
+  return order;
+};
+
 const parseList = (v: unknown) =>
   (Array.isArray(v) ? v : String(v ?? '').split(/[;,]/)).map((x) => String(x).trim()).filter(Boolean);
 
@@ -395,7 +411,7 @@ app.post(
 app.delete(
   '/api/routes/mt/:order', write,
   route(async (req, res) => {
-    const order = Number(req.params.order);
+    const order = requireOrder(req.params.order);
     await change(req, res, `MT route #${order} removed`, (c) => c.deleteMtRoute(order));
   })
 );
@@ -411,6 +427,8 @@ app.post(
     const filters = parseList(req.body.filters);
     if (!connectors.length) throw new HttpError(400, 'At least one connector is required');
     if (type !== 'DefaultRoute' && !filters.length) throw new HttpError(400, `${type} requires at least one filter`);
+    const s = await gateway.snapshot(true);
+    if (s.moRoutes.some((r) => r.order === order) && req.query.replace !== '1') throw new HttpError(409, `MO route #${order} already exists`);
     await change(req, res, `MO route #${order} saved`, (c) => c.createMoRoute(type, connectors, order, filters));
   })
 );
@@ -418,7 +436,7 @@ app.post(
 app.delete(
   '/api/routes/mo/:order', write,
   route(async (req, res) => {
-    const order = Number(req.params.order);
+    const order = requireOrder(req.params.order);
     await change(req, res, `MO route #${order} removed`, (c) => c.deleteMoRoute(order));
   })
 );
@@ -427,7 +445,8 @@ app.post(
   '/api/routes/simulate', read,
   route(async (req, res) => {
     const destination = requireText(req.body.destination_addr, 'Recipient');
-    const tags = parseList(req.body.tags).map(Number).filter(Number.isFinite);
+    // Jasmin compares tags as strings ("05" and "5" are different tags).
+    const tags = parseList(req.body.tags);
     const s = await gateway.snapshot();
     res.json(
       simulateMtRouting(s, {
@@ -459,7 +478,7 @@ app.post(
   '/api/topology/plan', read,
   route(async (req, res) => {
     const s = await gateway.snapshot(true);
-    res.json(describePlan(planDeploy(readGraph(req.body), s, { prune: req.body.prune !== false })));
+    res.json({ fetchedAt: s.fetchedAt, ...describePlan(planDeploy(readGraph(req.body), s, { prune: req.body.prune !== false })) });
   })
 );
 
@@ -470,10 +489,21 @@ app.post(
     const s = await gateway.snapshot(true);
     const plan = planDeploy(graph, s, { prune: req.body.prune !== false });
     if (plan.errors.length) return res.status(400).json({ error: 'The flow has problems that must be fixed before deploying', errors: plan.errors });
+    // Deploy exactly what was reviewed: if the gateway changed since the review (another user,
+    // the jCLI terminal, a stale editor tab), the recomputed plan differs and nothing is applied.
+    const fingerprint = planFingerprint(plan);
+    if (req.body.fingerprint !== fingerprint) {
+      auth.audit(req, 'flow-deploy-refused', 'plan changed since review', { reviewed: req.body.fingerprint ?? null, current: fingerprint });
+      return res.status(409).json({
+        error: req.body.fingerprint ? 'The gateway changed since you reviewed this deployment. Review the updated plan.' : 'Review the deployment plan first.',
+        stale: true,
+        plan: { fetchedAt: s.fetchedAt, ...describePlan(plan) }
+      });
+    }
     if (!plan.steps.length) return res.json({ success: true, applied: [], message: 'Nothing to deploy: the gateway already matches the flow' });
     try {
       const { result } = await gateway.mutate((c) => applyPlan(c, plan));
-      auth.audit(req, 'flow-deployed', `${result.length} change(s)`, { applied: result.map((r) => `${r.action} ${r.kind} ${r.id}`) });
+      auth.audit(req, 'flow-deployed', `${result.length} change(s)`, { fingerprint, applied: result.map((r) => `${r.action} ${r.kind} ${r.id}: ${r.summary}`) });
       res.json({ success: true, applied: result, message: `Deployed ${result.length} change(s) and persisted` });
     } catch (err: any) {
       auth.audit(req, 'flow-deploy-failed', undefined, { error: err.message });
@@ -495,8 +525,10 @@ app.get('/api/traffic/:msgid', auth.require('traffic:read'), (req, res) => {
   res.json(maskTraffic(msg, req.user?.role));
 });
 
-app.delete('/api/traffic', write, (_req, res) => {
+app.delete('/api/traffic', write, (req, res) => {
+  const cleared = amqpTap.getStats();
   amqpTap.clear();
+  auth.audit(req, 'traffic-buffer-cleared', undefined, { stats: cleared });
   res.json({ success: true });
 });
 
@@ -564,8 +596,7 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
   };
   // Browsers always send Origin on WebSocket handshakes: refuse cross-site hijacking attempts.
-  const origin = req.headers.origin;
-  if (origin && new URL(origin).host !== req.headers.host) return reject('403 Forbidden');
+  if (!sameOrigin(req.headers.origin, req.headers.host)) return reject('403 Forbidden');
   const session = auth.resolve(req.headers.cookie);
   if (!session || session.user.status !== 'active') return reject('401 Unauthorized');
   const pathname = (req.url || '').split('?')[0];
@@ -616,6 +647,7 @@ wssTerminal.on('connection', (ws, req: http.IncomingMessage) => {
   const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   auth.store.audit({ actor: who, action: 'terminal-opened', ip });
   let line = '';
+  let lineEdited = false;
   const tcp = new net.Socket();
   let ready = false;
   let buf = '';
@@ -672,13 +704,31 @@ wssTerminal.on('connection', (ws, req: http.IncomingMessage) => {
     }
     if (msg?.t === 'input' && ready && typeof msg.d === 'string' && !tcp.destroyed) {
       tcp.write(msg.d);
-      // Audit each submitted command line; secrets typed into jCLI are redacted.
-      for (const ch of msg.d) {
+      // Audit each submitted command line; secrets typed into jCLI are redacted. Escape sequences
+      // (arrow keys, history recall) and TAB completion edit the line inside jCLI, so the exact
+      // command cannot be rebuilt from the keystrokes: such lines are flagged instead of guessed.
+      const input = msg.d.replace(/\x1b(?:\[[0-9;?]*[ -\/]*[@-~]|O.|[@-Z\\-_])/g, () => {
+        lineEdited = true;
+        return '';
+      });
+      for (const ch of input) {
         if (ch === '\r' || ch === '\n') {
           const cmd = line.trim();
-          if (cmd) auth.store.audit({ actor: who, action: 'terminal-command', target: /^(password|.*_password)\b/i.test(cmd) ? cmd.split(/\s+/)[0] + ' ••••' : cmd, ip });
+          if (cmd || lineEdited) {
+            const secret = /^(password|\S*_password|\S*pass(word|wd)?)\b/i.test(cmd);
+            auth.store.audit({
+              actor: who,
+              action: 'terminal-command',
+              target: secret ? cmd.split(/\s+/)[0] + ' ••••' : cmd,
+              ...(lineEdited ? { detail: { edited: 'arrow keys / history / completion used: the line sent may differ from target' } } : {}),
+              ip
+            });
+          }
           line = '';
+          lineEdited = false;
         } else if (ch === '\x7f' || ch === '\b') line = line.slice(0, -1);
+        else if (ch === '\t') lineEdited = true;
+        else if (ch === '\x15') line = '';
         else if (ch >= ' ') line += ch;
       }
     }
@@ -698,6 +748,7 @@ gateway.ping().then((ok) =>
 server.listen(PORT, '0.0.0.0', () => console.log(`[console] Listening on http://0.0.0.0:${PORT}`));
 
 const shutdown = () => {
+  auth.close();
   amqpTap.stop();
   gateway.close();
   server.close(() => process.exit(0));

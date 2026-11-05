@@ -7,6 +7,46 @@ import os
 import sys
 import configparser
 
+# jcli_pwhash.py lives next to this script in the image and in docker/patches/ in the repo.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(_HERE, "patches")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+from jcli_pwhash import make as _hash_jcli_password  # noqa: E402
+
+
+def jcli_plain_password():
+    """The jCLI admin password as plain text.
+
+    JCLI_ADMIN_PASSWORD is always plain text: it is never inspected to guess whether it is
+    already a digest. The entrypoint moves the plain value to JCLI_ADMIN_RAW_PASSWORD before it
+    replaces JCLI_ADMIN_PASSWORD with the digest Jasmin expects, so that one is read first.
+    """
+    return os.getenv("JCLI_ADMIN_RAW_PASSWORD") or os.getenv("JCLI_ADMIN_PASSWORD") or ""
+
+
+def jcli_password_digest(plain):
+    """Salted PBKDF2-SHA256 hash of the jCLI admin password (no MD5).
+
+    Upstream Jasmin compares an unsalted MD5; the image patches jCLI to verify this format
+    instead (patches/patch_jcli_pwhash.py). The rules below mirror what jasmind does with the
+    password, so a value that could never log in is rejected at start-up with a clear message:
+      - jasmind -p encodes it as ASCII (protocols/cli/factory.py): non-ASCII crashes start-up;
+      - the jCLI login strips the typed password: surrounding whitespace can never match.
+    """
+    if not plain:
+        raise ValueError("the jCLI admin password is empty")
+    try:
+        raw = plain.encode("ascii")
+    except UnicodeEncodeError:
+        raise ValueError("the jCLI admin password must contain ASCII characters only (Jasmin limitation)")
+    if plain != plain.strip():
+        raise ValueError("the jCLI admin password must not start or end with whitespace (jCLI strips it)")
+    if any(ord(c) < 32 or ord(c) == 127 for c in plain):
+        raise ValueError("the jCLI admin password must not contain control characters")
+    return _hash_jcli_password(raw)
+
+
 def update_jasmin_config(config_file):
     if not os.path.isfile(config_file):
         print(f"Config file {config_file} not found, skipping dynamic update.")
@@ -18,6 +58,11 @@ def update_jasmin_config(config_file):
     def set_val(section, option, *env_vars):
         for env_var in env_vars:
             val = os.getenv(env_var)
+            # Kubernetes injects <SERVICE>_PORT=tcp://10.0.0.1:6379 for every Service in the
+            # namespace (a Service named "redis" gives REDIS_PORT): never take that as a port.
+            if option == "port" and val and not val.isdigit():
+                print(f"[WARN] Ignoring {env_var}={val!r} for [{section}] port: not a port number")
+                continue
             if val is not None and val != "":
                 if not parser.has_section(section):
                     parser.add_section(section)
@@ -44,13 +89,9 @@ def update_jasmin_config(config_file):
     parser.set("jcli", "bind", os.getenv("JCLI_BIND", "0.0.0.0"))
     set_val("jcli", "port", "JCLI_PORT")
     set_val("jcli", "admin_username", "JCLI_ADMIN_USERNAME")
-    jcli_pwd = os.getenv("JCLI_ADMIN_PASSWORD")
-    if jcli_pwd:
-        # If not already a 32-char MD5 hex digest, compute MD5 digest so jCLI can authenticate properly
-        if not (len(jcli_pwd) == 32 and all(c in "0123456789abcdefABCDEF" for c in jcli_pwd)):
-            import hashlib
-            jcli_pwd = hashlib.md5(jcli_pwd.encode("utf-8")).hexdigest()
-        parser.set("jcli", "admin_password", jcli_pwd)
+    jcli_plain = jcli_plain_password()
+    if jcli_plain:
+        parser.set("jcli", "admin_password", jcli_password_digest(jcli_plain))
 
     # [smpp-server]
     if not parser.has_section("smpp-server"):
@@ -78,6 +119,14 @@ def update_jasmin_config(config_file):
     print(f"Updated configuration written to {config_file}")
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--jcli-digest"]:
+        # Used by docker-entrypoint.sh: print the hash of the plain password, or fail clearly.
+        try:
+            print(jcli_password_digest(jcli_plain_password()))
+        except ValueError as err:
+            print(f"[ERROR] {err}", file=sys.stderr)
+            sys.exit(2)
+        sys.exit(0)
     cfg_path = sys.argv[1] if len(sys.argv) > 1 else "/etc/jasmin/jasmin.cfg"
     update_jasmin_config(cfg_path)
 

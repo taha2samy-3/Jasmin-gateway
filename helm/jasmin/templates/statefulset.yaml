@@ -4,9 +4,15 @@ metadata:
   name: {{ include "jasmin.fullname" . }}
   labels:
     {{- include "jasmin.labels" . | nindent 4 }}
+{{- include "jasmin.guardVolumeClaimTemplates" . }}
 spec:
   serviceName: {{ include "jasmin.fullname" . }}
   replicas: {{ .Values.replicaCount }}
+  {{- with .Values.persistence.retentionPolicy }}
+  # What happens to the PVCs when the StatefulSet is deleted or scaled down (default: Retain both).
+  persistentVolumeClaimRetentionPolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- with .Values.updateStrategy }}
   updateStrategy:
     {{- toYaml . | nindent 4 }}
@@ -30,6 +36,9 @@ spec:
     spec:
       serviceAccountName: {{ include "jasmin.serviceAccountName" . }}
       automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      # Jasmin reads any <SECTION>_<OPTION> environment variable as configuration, so the
+      # <SERVICE>_PORT=tcp://... variables Kubernetes injects for Services must stay out.
+      enableServiceLinks: {{ .Values.enableServiceLinks }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . | quote }}
@@ -63,10 +72,24 @@ spec:
           {{- end }}
         {{- end }}
       {{- end }}
+      {{- /* Always rendered (empty when unused) so server-side apply drops init containers that were removed. */}}
+      initContainers:
+        {{- with .Values.extraInitContainers }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- else }} []
+        {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.resizePolicy }}
           resizePolicy:
             {{- toYaml . | nindent 12 }}
@@ -84,32 +107,39 @@ spec:
               value: {{ include "jasmin.redisHost" . | quote }}
             - name: REDIS_CLIENT_PORT
               value: {{ include "jasmin.redisPort" . | quote }}
+            {{- if .Values.credentials.useSecretRef }}
             - name: REDIS_CLIENT_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.redis.existingSecret }}
                   key: {{ default "redis-password" .Values.credentials.redis.existingSecretKey }}
                   optional: true
+            {{- end }}
             - name: AMQP_BROKER_HOST
               value: {{ include "jasmin.rabbitmqHost" . | quote }}
             - name: AMQP_BROKER_PORT
               value: {{ include "jasmin.rabbitmqPort" . | quote }}
             - name: AMQP_BROKER_USER
               value: {{ .Values.credentials.rabbitmq.username | quote }}
+            {{- if .Values.credentials.useSecretRef }}
             - name: AMQP_BROKER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.rabbitmq.existingSecret }}
                   key: {{ default "rabbitmq-password" .Values.credentials.rabbitmq.existingSecretKey }}
+            {{- end }}
             - name: AMQP_BROKER_VHOST
               value: {{ .Values.credentials.rabbitmq.vhost | quote }}
             - name: JCLI_ADMIN_USERNAME
               value: {{ .Values.credentials.jcli.username | quote }}
+            {{- if .Values.credentials.useSecretRef }}
             - name: JCLI_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.jcli.existingSecret }}
                   key: {{ default "jcli-password" .Values.credentials.jcli.existingSecretKey }}
+            {{- end }}
+            {{- include "jasmin.commonRuntimeEnv" . | trim | nindent 12 }}
             - name: START_EMBEDDED_INTERCEPTOR
               value: {{ ternary "true" "false" (and .Values.interceptor.enabled .Values.interceptor.embedded) | quote }}
             - name: ENABLE_INTERCEPTOR_CLIENT
@@ -169,6 +199,14 @@ spec:
         - name: dashboard
           image: "{{ .Values.dashboard.image.repository }}{{ if .Values.dashboard.image.digest }}@{{ .Values.dashboard.image.digest }}{{ else }}:{{ .Values.dashboard.image.tag }}{{ end }}"
           imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          {{- with .Values.dashboard.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: dashboard
               containerPort: {{ .Values.dashboard.port }}
@@ -184,11 +222,13 @@ spec:
               value: {{ .Values.service.ports.jcli.targetPort | quote }}
             - name: JCLI_ADMIN_USERNAME
               value: {{ .Values.credentials.jcli.username | quote }}
+            {{- if .Values.credentials.useSecretRef }}
             - name: JCLI_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.jcli.existingSecret }}
                   key: {{ default "jcli-password" .Values.credentials.jcli.existingSecretKey }}
+            {{- end }}
             - name: HTTP_API_URL
               value: "http://127.0.0.1:{{ .Values.service.ports.httpApi.targetPort }}"
             - name: RABBITMQ_HOST
@@ -197,11 +237,13 @@ spec:
               value: {{ include "jasmin.rabbitmqPort" . | quote }}
             - name: RABBITMQ_USER
               value: {{ .Values.credentials.rabbitmq.username | quote }}
+            {{- if .Values.credentials.useSecretRef }}
             - name: RABBITMQ_PASS
               valueFrom:
                 secretKeyRef:
                   name: {{ default (printf "%s-secrets" (include "jasmin.fullname" .)) .Values.credentials.rabbitmq.existingSecret }}
                   key: {{ default "rabbitmq-password" .Values.credentials.rabbitmq.existingSecretKey }}
+            {{- end }}
             - name: RABBITMQ_VHOST
               value: {{ .Values.credentials.rabbitmq.vhost | quote }}
             # Created by the console itself (as its own user) inside the store volume.
@@ -209,7 +251,7 @@ spec:
               value: "/data/console"
             - name: ADMIN_USERNAME
               value: {{ .Values.dashboard.admin.username | quote }}
-            {{- if or .Values.dashboard.admin.password .Values.dashboard.admin.existingSecret }}
+            {{- if and .Values.credentials.useSecretRef (or .Values.dashboard.admin.password .Values.dashboard.admin.existingSecret) }}
             - name: ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -226,6 +268,17 @@ spec:
             - name: TRUST_PROXY
               value: {{ . | quote }}
             {{- end }}
+            {{- include "jasmin.commonRuntimeEnv" . | trim | nindent 12 }}
+            - name: SESSION_PERSIST
+              value: {{ ternary "true" "false" (ne .Values.dashboard.session.persist false) | quote }}
+            - name: AUDIT_RETENTION_DAYS
+              value: {{ .Values.dashboard.audit.retentionDays | quote }}
+            - name: AUDIT_MAX_FILE_MB
+              value: {{ .Values.dashboard.audit.maxFileMB | quote }}
+            - name: AUDIT_MAX_TOTAL_MB
+              value: {{ .Values.dashboard.audit.maxTotalMB | quote }}
+            - name: AUDIT_STDOUT
+              value: {{ ternary "true" "false" .Values.dashboard.audit.stdout | quote }}
             - name: SESSION_IDLE_MINUTES
               value: {{ .Values.dashboard.session.idleMinutes | quote }}
             - name: SESSION_MAX_HOURS
@@ -235,7 +288,7 @@ spec:
               value: {{ required "dashboard.oidc.issuerUrl is required when dashboard.oidc.enabled" .Values.dashboard.oidc.issuerUrl | quote }}
             - name: OIDC_CLIENT_ID
               value: {{ required "dashboard.oidc.clientId is required when dashboard.oidc.enabled" .Values.dashboard.oidc.clientId | quote }}
-            {{- if or .Values.dashboard.oidc.clientSecret .Values.dashboard.oidc.existingSecret }}
+            {{- if or .Values.dashboard.oidc.existingSecret (and .Values.credentials.useSecretRef .Values.dashboard.oidc.clientSecret) }}
             - name: OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -255,9 +308,6 @@ spec:
             - name: config-volume
               mountPath: /etc/jasmin/jasmin.cfg
               subPath: jasmin.cfg
-              readOnly: true
-            - name: logs
-              mountPath: /var/log/jasmin
               readOnly: true
             # Console accounts and audit log, kept on the persistent store volume.
             # (No subPath: kubelet-created subPath directories are owned by root.)
@@ -286,6 +336,9 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
       volumes:
         - name: config-volume
           configMap:
@@ -293,8 +346,15 @@ spec:
         {{- if not .Values.persistence.enabled }}
         - name: store
           emptyDir: {}
+        {{- else if .Values.persistence.existingClaim }}
+        - name: store
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+        {{- end }}
+        {{- if not (include "jasmin.logsClaim" .) }}
         - name: logs
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ .Values.persistence.logsSize | default "2Gi" }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
@@ -311,32 +371,8 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-  {{- if .Values.persistence.enabled }}
+  {{- $vct := include "jasmin.volumeClaimTemplates" . | trim }}
+  {{- with $vct }}
   volumeClaimTemplates:
-    - metadata:
-        name: store
-        {{- with .Values.persistence.annotations }}
-        annotations:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-      spec:
-        accessModes:
-          - {{ .Values.persistence.accessMode | quote }}
-        {{- if .Values.persistence.storageClass }}
-        storageClassName: {{ .Values.persistence.storageClass | quote }}
-        {{- end }}
-        resources:
-          requests:
-            storage: {{ .Values.persistence.size | quote }}
-    - metadata:
-        name: logs
-      spec:
-        accessModes:
-          - {{ .Values.persistence.accessMode | quote }}
-        {{- if .Values.persistence.storageClass }}
-        storageClassName: {{ .Values.persistence.storageClass | quote }}
-        {{- end }}
-        resources:
-          requests:
-            storage: {{ .Values.persistence.logsSize | default "2Gi" | quote }}
+    {{- . | nindent 4 }}
   {{- end }}

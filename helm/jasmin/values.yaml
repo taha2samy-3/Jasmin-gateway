@@ -30,6 +30,33 @@ terminationGracePeriodSeconds: 60
 nameOverride: ""
 fullnameOverride: ""
 
+# Shell environment files sourced by both containers before start-up (JASMIN_ENV_FILES), e.g. the
+# file rendered by the Vault Agent Injector. Lines look like `export KEY='value'`. Values from these
+# files override the container env; REDIS_HOST/PORT/PASSWORD and RABBITMQ_HOST/PORT/USER/PASSWORD/VHOST
+# are mapped onto Jasmin's own variables (and RABBITMQ_PASSWORD, DASHBOARD_ADMIN_USERNAME/PASSWORD for
+# the console). A listed file that is missing stops the container. With this, no command override is
+# needed (an override that drops the image's jasmind flags disables DLRs and the interceptor).
+# Example: ["/vault/secrets/config"]
+envFiles: []
+
+# Override the Jasmin container command/args. Prefer envFiles: if you override, keep
+# `jasmind.py --enable-interceptor-client --enable-dlr-thrower --enable-dlr-lookup`.
+command: []
+args: []
+
+# Kubernetes injects <SERVICE>_PORT=tcp://... variables for every Service in the namespace, and Jasmin
+# reads any <SECTION>_<OPTION> variable as configuration (e.g. a Service named "redis-client").
+enableServiceLinks: false
+
+# Extra init containers / sidecars (rendered through tpl). initContainers is always rendered (empty
+# when unused) so server-side apply removes init containers dropped from values.
+extraInitContainers: []
+extraContainers: []
+
+# Extra manifests deployed with the release (maps or strings, rendered through tpl), e.g. a NetBird
+# SetupKey/SidecarProfile, an ExternalSecret, or a VolumeSnapshot schedule.
+extraObjects: []
+
 serviceAccount:
   create: true
   annotations: {}
@@ -176,6 +203,23 @@ dashboard:
   session:
     idleMinutes: 60
     maxHours: 12
+    # Keep sessions in the store volume (hashed ids) so a console restart does not sign everyone out.
+    persist: true
+
+  # Console audit trail lifecycle (stored in the store volume under /data/console).
+  audit:
+    # Rotated daily files older than this are deleted (0 = keep forever).
+    retentionDays: 180
+    # The active file is also rotated when it reaches this size.
+    maxFileMB: 20
+    # Oldest files are deleted while the whole trail exceeds this size (keep it below the store PVC).
+    maxTotalMB: 500
+    # Also print every entry as a JSON line on the console container's stdout (Fluent Bit, Loki, SIEM).
+    stdout: false
+
+  # Override the console container command/args (prefer envFiles).
+  command: []
+  args: []
 
   # OpenID Connect single sign-on (tested with Microsoft Entra ID).
   # New SSO users wait in "pending" until an administrator approves them with a role
@@ -280,8 +324,20 @@ httpRoute:
     #       port: 1401
 
 # Persistence for /etc/jasmin/store and /var/log/jasmin
+# Persistence. The "store" claim holds Jasmin's persisted configuration (users, connectors, routes,
+# filters: what `persist` writes) and the console's accounts, sessions and audit trail (/data/console).
+# StatefulSet PVC templates are immutable after install: see "Managing the volumes" in the README.
 persistence:
   enabled: true
+  # Use an existing PVC for the store instead of a volumeClaimTemplate (e.g. restored from a snapshot).
+  existingClaim: ""
+  # Separate claim for /var/log/jasmin. With config.logToStdout you can set this to false
+  # (logs then live in an emptyDir limited to logsSize).
+  logsEnabled: true
+  # PVCs on StatefulSet deletion / scale-down (Kubernetes 1.27+), e.g. {whenDeleted: Retain, whenScaled: Retain}.
+  retentionPolicy: {}
+  # Skip the pre-upgrade check that stops a change to the PVC templates (see the README).
+  skipTemplateCheck: false
   storageClass: ""
   accessMode: ReadWriteOnce
   size: 5Gi
@@ -290,6 +346,12 @@ persistence:
 
 # Authentication Credentials
 credentials:
+  # Render the <release>-secrets Secret (jCLI password generated when empty).
+  # With GitOps renderers (Argo CD) Helm's lookup is unavailable, so a generated password would change
+  # on every render: set credentials.jcli.password/existingSecret, or use envFiles and false here.
+  createSecret: true
+  # Reference Secrets from the containers. false: credentials come only from envFiles/extraEnv.
+  useSecretRef: true
   jcli:
     # Single source for the jCLI admin account (used by Jasmin, the bootstrap job and the console).
     username: "jcliadmin"
@@ -332,6 +394,10 @@ externalRabbitMQ:
 # =========================================================================
 config:
   logLevel: "INFO"
+  # Send every Jasmin log to the container's stdout instead of files under /var/log/jasmin
+  # (no log volume to clean; collected by Fluent Bit / Promtail). SMPP connectors created by the
+  # console also log to stdout; existing connectors keep their file until changed in jCLI.
+  logToStdout: false
   logPrivacy: false
 
   # [smpp-server]
